@@ -20,7 +20,9 @@ import {
   Star,
   Store,
   Trash2,
+  ScanText,
   Upload,
+  Wand2,
   X,
 } from 'lucide-react';
 import {
@@ -34,6 +36,8 @@ import {
   YAxis,
 } from 'recharts';
 import { db, ensureDefaults } from './db';
+import { extractText } from './ocr';
+import { parseReceiptText, type OcrLineDraft, type OcrResult } from './parser';
 import type { PackageUnit, Product, Purchase, Supermarket, Ticket, TicketLineDraft } from './types';
 import { formatUnitPrice, money, normalizeUnitPrice, parseNumber, pct, todayISO, uid } from './utils';
 
@@ -271,6 +275,41 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
   const [lines, setLines] = useState<TicketLineDraft[]>([emptyLine()]);
   const [loaded, setLoaded] = useState(ticketId === null);
   const [error, setError] = useState('');
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrStage, setOcrStage] = useState('');
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrReview, setOcrReview] = useState<OcrResult | null>(null);
+  const [ocrError, setOcrError] = useState('');
+
+  async function runOcr() {
+    if (!file) { setOcrError('Selecciona antes la imagen o el PDF del ticket.'); return; }
+    setOcrError(''); setOcrBusy(true); setOcrProgress(0); setOcrStage('Iniciando OCR local');
+    try {
+      const eqs = await db.equivalences.toArray();
+      const map = Object.fromEntries(eqs.map((e) => [e.rawName, e.genericName]));
+      const text = await extractText(file, (stage, progress) => { setOcrStage(stage); setOcrProgress(progress); });
+      setOcrReview(parseReceiptText(text, map));
+      const parsed = parseReceiptText(text, map);
+      if (parsed.date) setDate(parsed.date);
+      if (parsed.supermarket) {
+        const match = supermarkets.find((s) => s.name.toLowerCase() === parsed.supermarket!.toLowerCase());
+        if (match?.id) setSupermarketId(match.id);
+      }
+    } catch (e) {
+      setOcrError(`No se pudo leer el ticket en este dispositivo: ${(e as Error).message}`);
+    } finally {
+      setOcrBusy(false);
+    }
+  }
+
+  function applyOcrLines(selected: OcrLineDraft[]) {
+    setLines((prev) => {
+      const base = prev.filter((l) => l.productName.trim());
+      const cleaned = selected.map(({ rawLine: _r, confidence: _c, ...rest }) => rest);
+      return [...base, ...cleaned];
+    });
+    setOcrReview(null);
+  }
 
   useEffect(() => {
     if (!ticketId || !existingTicket || loaded) return;
@@ -307,7 +346,7 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
     if (!supermarketId) return setError('Selecciona un supermercado.');
     if (!valid.length) return setError('Añade al menos un producto con nombre, formato y precio.');
 
-    await db.transaction('rw', db.tickets, db.products, db.purchases, async () => {
+    await db.transaction('rw', db.tickets, db.products, db.purchases, db.equivalences, async () => {
       let currentId = ticketId;
       if (currentId) {
         const old = await db.tickets.get(currentId);
@@ -340,6 +379,11 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
           await db.products.update(product.id!, { genericName, category: line.category.trim() || 'Sin categoría' });
           product = { ...product, genericName, category: line.category };
         }
+        const rawKey = line.productName.trim().toLowerCase();
+        const existingEq = await db.equivalences.where('rawName').equals(rawKey).first();
+        if (existingEq?.id) await db.equivalences.update(existingEq.id, { genericName, brand, productName: name });
+        else await db.equivalences.add({ rawName: rawKey, genericName, brand, productName: name });
+
         const normalized = normalizeUnitPrice(line.price, line.discount, line.quantityPurchased, line.packageAmount, line.packageUnit);
         await db.purchases.add({
           ticketId: currentId!, productId: product!.id!, supermarketId, date,
@@ -361,7 +405,21 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
           <label>Fecha<input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
           <label>Ticket (imagen/PDF)<input type="file" accept="image/*,.pdf,application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
         </div>
-        <div className="ocr-note"><Upload size={17} /><div><strong>OCR local preparado como siguiente módulo</strong><span>En esta versión guardamos el archivo original y revisas las líneas manualmente. Así la estructura de datos queda estable antes de automatizar la lectura.</span></div></div>
+        <div className="ocr-note">
+          <ScanText size={17} />
+          <div className="ocr-note-body">
+            <div>
+              <strong>OCR 100 % local</strong>
+              <span>La imagen o el PDF nunca salen de este dispositivo: el reconocimiento se ejecuta en tu navegador. Revisarás cada línea antes de guardar.</span>
+              {ocrBusy && <span className="ocr-progress">{ocrStage} · {Math.round(ocrProgress * 100)} %</span>}
+              {ocrError && <span className="error">{ocrError}</span>}
+            </div>
+            <button className="primary" type="button" onClick={runOcr} disabled={ocrBusy}>
+              <Wand2 size={17} /> {ocrBusy ? 'Leyendo…' : 'Leer ticket con OCR'}
+            </button>
+          </div>
+        </div>
+        {ocrReview && <OcrReview result={ocrReview} onCancel={() => setOcrReview(null)} onApply={applyOcrLines} />}
         <div className="line-table-wrap">
           <table className="line-table">
             <thead><tr><th>Producto</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th></th></tr></thead>
@@ -383,6 +441,88 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
         </div>
         <button className="ghost add-line" onClick={() => setLines((p) => [...p, emptyLine()])}><Plus size={17} /> Añadir producto</button>
         <div className="modal-footer"><div><span>Total calculado</span><strong>{money(computedTotal)}</strong></div><div>{error && <span className="error">{error}</span>}<button className="ghost" onClick={onClose}>Cancelar</button><button className="primary" onClick={save}><Save size={17} /> Guardar ticket</button></div></div>
+      </div>
+    </div>
+  );
+}
+
+function OcrReview({ result, onCancel, onApply }: {
+  result: OcrResult;
+  onCancel: () => void;
+  onApply: (lines: OcrLineDraft[]) => void;
+}) {
+  const [draft, setDraft] = useState<OcrLineDraft[]>(result.lines);
+  const [skipped, setSkipped] = useState<Record<string, boolean>>({});
+  const [showText, setShowText] = useState(false);
+
+  function update(id: string, patch: Partial<OcrLineDraft>) {
+    setDraft((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  }
+
+  const selected = draft.filter((l) => !skipped[l.id] && l.productName.trim());
+
+  return (
+    <div className="ocr-review">
+      <div className="ocr-review-head">
+        <div>
+          <span className="eyebrow">REVISIÓN OCR</span>
+          <h3>{draft.length} líneas detectadas</h3>
+          <p>
+            {result.supermarket ? `Supermercado: ${result.supermarket}` : 'Supermercado no detectado'} ·{' '}
+            {result.date ? `Fecha: ${result.date}` : 'Fecha no detectada'} ·{' '}
+            {result.total !== null ? `Total del ticket: ${money(result.total)}` : 'Total no detectado'}
+          </p>
+        </div>
+        <button className="ghost" type="button" onClick={() => setShowText((v) => !v)}>
+          {showText ? 'Ocultar texto' : 'Ver texto reconocido'}
+        </button>
+      </div>
+
+      {showText && <pre className="ocr-raw">{result.rawText}</pre>}
+
+      {draft.length === 0 ? (
+        <Empty text="No se han reconocido líneas con precio. Puedes añadirlas manualmente en la tabla inferior." />
+      ) : (
+        <div className="line-table-wrap">
+          <table className="line-table">
+            <thead>
+              <tr><th>Usar</th><th>Nombre en ticket</th><th>Nombre normalizado</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th>Fiab.</th></tr>
+            </thead>
+            <tbody>
+              {draft.map((line) => (
+                <tr key={line.id} className={skipped[line.id] ? 'skipped' : ''}>
+                  <td><input type="checkbox" checked={!skipped[line.id]} onChange={(e) => setSkipped((p) => ({ ...p, [line.id]: !e.target.checked }))} /></td>
+                  <td className="raw-cell">{line.rawLine}</td>
+                  <td><input value={line.productName} onChange={(e) => update(line.id, { productName: e.target.value })} /></td>
+                  <td><input value={line.genericName} onChange={(e) => update(line.id, { genericName: e.target.value })} /></td>
+                  <td><input value={line.brand} onChange={(e) => update(line.id, { brand: e.target.value })} /></td>
+                  <td>
+                    <div className="format-input">
+                      <input type="number" step="0.001" value={line.packageAmount} onChange={(e) => update(line.id, { packageAmount: parseNumber(e.target.value) })} />
+                      <select value={line.packageUnit} onChange={(e) => update(line.id, { packageUnit: e.target.value as PackageUnit })}>
+                        <option value="g">g</option><option value="kg">kg</option><option value="ml">ml</option><option value="l">L</option><option value="ud">ud</option>
+                      </select>
+                    </div>
+                  </td>
+                  <td><input type="number" step="1" value={line.quantityPurchased} onChange={(e) => update(line.id, { quantityPurchased: parseNumber(e.target.value) })} /></td>
+                  <td><input type="number" step="0.01" value={line.price} onChange={(e) => update(line.id, { price: parseNumber(e.target.value) })} /></td>
+                  <td><input type="number" step="0.01" value={line.discount} onChange={(e) => update(line.id, { discount: parseNumber(e.target.value) })} /></td>
+                  <td><span className={`conf ${line.confidence}`}>{line.confidence}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="ocr-review-actions">
+        <span>Tus correcciones se guardan como equivalencias locales y se reutilizarán en próximos tickets.</span>
+        <div>
+          <button className="ghost" type="button" onClick={onCancel}>Descartar</button>
+          <button className="primary" type="button" disabled={!selected.length} onClick={() => onApply(selected)}>
+            <Save size={17} /> Pasar {selected.length} líneas al ticket
+          </button>
+        </div>
       </div>
     </div>
   );
