@@ -55,3 +55,11 @@ export interface TicketLineDraft {
   price: number;
   discount: number;
 }
+
+export interface Equivalence {
+  id?: number;
+  rawName: string;
+  genericName: string;
+  brand: string;
+  productName: string;
+}
