@@ -42,7 +42,7 @@ import { formatUnitPrice, money, normalizeUnitPrice, parseNumber, pct, todayISO,
 
 type View = 'dashboard' | 'tickets' | 'products' | 'compare' | 'history' | 'settings';
 
-type EnrichedPurchase = Purchase & { product?: Product; supermarket?: Supermarket };
+type EnrichedPurchase = Purchase & { product: Product | undefined; supermarket: Supermarket | undefined };
 
 const emptyLine = (): TicketLineDraft => ({
   id: uid(),
@@ -264,7 +264,7 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
   purchases: Purchase[];
   onClose: () => void;
 }) {
-  const existingTicket = useLiveQuery(() => ticketId ? db.tickets.get(ticketId) : Promise.resolve(undefined), [ticketId]);
+  const existingTicket = useLiveQuery(async (): Promise<Ticket | undefined> => (ticketId ? db.tickets.get(ticketId) : undefined), [ticketId]);
   const [supermarketId, setSupermarketId] = useState<number>(supermarkets[0]?.id ?? 0);
   const [date, setDate] = useState(todayISO());
   const [file, setFile] = useState<File | null>(null);
@@ -323,10 +323,8 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
           supermarketId,
           date,
           total: computedTotal,
-          filename: file?.name,
-          fileType: file?.type,
-          fileBlob: file ?? undefined,
           createdAt: new Date().toISOString(),
+          ...(file ? { filename: file.name, fileType: file.type, fileBlob: file } : {}),
         });
       }
 
@@ -455,7 +453,7 @@ function CompareView() {
   return (
     <section className="page">
       <div className="page-heading"><div><span className="eyebrow">COMPARAR</span><h2>Mismo producto, distinta marca</h2><p>Se compara el precio normalizado, no solo el precio del envase.</p></div><label className="select-label">Producto genérico<select value={selected} onChange={(e) => setSelected(e.target.value)}>{genericNames.map((g) => <option key={g} value={g}>{g}</option>)}</select></label></div>
-      {!selected ? <div className="panel"><Empty text="Necesitas productos con un nombre genérico para compararlos." /></div> : candidates.length === 0 ? <div className="panel"><Empty text="No hay compras suficientes para este producto." /></div> : (
+      {!selected ? <div className="panel"><Empty text="Necesitas productos con un nombre genérico para compararlos." /></div> : (candidates.length === 0 || !cheapest || !favorite) ? <div className="panel"><Empty text="No hay compras suficientes para este producto." /></div> : (
         <>
           <div className="content-grid two">
             <div className="recommendation best"><span>💰 MÁS BARATO</span><h3>{cheapest.product?.name}</h3><p>{cheapest.supermarket?.name} · {formatUnitPrice(cheapest.normalizedUnitPrice, cheapest.normalizedUnit)}</p></div>
@@ -498,7 +496,7 @@ function HistoryView() {
             <Metric icon={ArrowUpRight} label="Variación total" value={pct(variation)} />
             <Metric icon={Store} label="Supermercados" value={String(markets.length)} />
           </div>
-          <div className="panel chart-panel"><div className="chart-height"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" /><YAxis /><Tooltip formatter={(value) => money(Number(value))} /><Legend />{markets.map((m, i) => <Line key={m} type="monotone" dataKey={m} connectNulls strokeWidth={2.5} dot={{ r: 4 }} stroke={['#2d6a4f','#d97706','#2563eb','#7c3aed','#dc2626','#0891b2'][i % 6]} />)}</LineChart></ResponsiveContainer></div></div>
+          <div className="panel chart-panel"><div className="chart-height"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" /><YAxis /><Tooltip formatter={(value) => money(Number(value))} /><Legend />{markets.map((m, i) => <Line key={m} type="monotone" dataKey={m} connectNulls strokeWidth={2.5} dot={{ r: 4 }} stroke={['#2d6a4f','#d97706','#2563eb','#7c3aed','#dc2626','#0891b2'][i % 6] ?? '#2d6a4f'} />)}</LineChart></ResponsiveContainer></div></div>
           <div className="panel table-panel"><table className="data-table"><thead><tr><th>Fecha</th><th>Producto</th><th>Supermercado</th><th>Formato</th><th>Precio</th><th>Comparable</th></tr></thead><tbody>{[...relevant].reverse().map((p) => <tr key={p.id}><td>{new Date(`${p.date}T00:00:00`).toLocaleDateString('es-ES')}</td><td>{p.product?.name}</td><td>{p.supermarket?.name}</td><td>{p.packageAmount} {p.packageUnit}</td><td>{money(p.price-p.discount)}</td><td className="strong-cell">{formatUnitPrice(p.normalizedUnitPrice,p.normalizedUnit)}</td></tr>)}</tbody></table></div>
         </>
       )}
@@ -564,7 +562,7 @@ function detectAlerts(purchases: EnrichedPurchase[]) {
   const alerts: Array<{ key: string; kind: 'up' | 'down'; title: string; detail: string }> = [];
   for (const [productId, list] of map) {
     const sorted = list.sort((a,b) => b.date.localeCompare(a.date)); if (sorted.length < 2) continue;
-    const [latest, prev] = sorted; const product = latest.product; if (!product) continue;
+    const latest = sorted[0]!; const prev = sorted[1]!; const product = latest.product; if (!product) continue;
     const delta = prev.normalizedUnitPrice ? ((latest.normalizedUnitPrice / prev.normalizedUnitPrice) - 1) * 100 : 0;
     if (Math.abs(delta) >= 3) alerts.push({ key: `${productId}-price`, kind: delta > 0 ? 'up' : 'down', title: `${product.name}: ${delta > 0 ? 'sube' : 'baja'} ${Math.abs(delta).toFixed(1)} %`, detail: `${formatUnitPrice(prev.normalizedUnitPrice, prev.normalizedUnit)} → ${formatUnitPrice(latest.normalizedUnitPrice, latest.normalizedUnit)}` });
     if (latest.packageUnit === prev.packageUnit && latest.packageAmount < prev.packageAmount * 0.99) alerts.push({ key: `${productId}-size`, kind: 'up', title: `${product.name}: envase más pequeño`, detail: `${prev.packageAmount} ${prev.packageUnit} → ${latest.packageAmount} ${latest.packageUnit}` });
@@ -573,6 +571,6 @@ function detectAlerts(purchases: EnrichedPurchase[]) {
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(blob); }); }
-function dataUrlToBlob(dataUrl: string) { const [meta, b64] = dataUrl.split(','); const mime = meta.match(/data:(.*?);base64/)?.[1] ?? 'application/octet-stream'; const binary = atob(b64); const bytes = new Uint8Array(binary.length); for (let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i); return new Blob([bytes], { type: mime }); }
+function dataUrlToBlob(dataUrl: string) { const [meta = '', b64 = ''] = dataUrl.split(','); const mime = meta.match(/data:(.*?);base64/)?.[1] ?? 'application/octet-stream'; const binary = atob(b64); const bytes = new Uint8Array(binary.length); for (let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i); return new Blob([bytes], { type: mime }); }
 
 export default App;
