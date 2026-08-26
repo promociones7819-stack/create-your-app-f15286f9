@@ -189,6 +189,7 @@ function Dashboard({ onGo }: { onGo: (v: View) => void }) {
             <li>Comparar automáticamente por €/kg, €/L o unidad.</li>
             <li>Valorar productos con 1–5 estrellas.</li>
             <li>Detectar subida de precio unitario y reducción de envase.</li>
+            <li>Leer tickets en imagen o PDF con OCR local y revisión previa.</li>
           </ul>
         </div>
       </div>
@@ -234,7 +235,7 @@ function TicketsView() {
       </div>
 
       {tickets.length === 0 ? (
-        <div className="panel empty-large"><ReceiptText size={36} /><h3>Aún no has añadido tickets</h3><p>Empieza con uno y registra sus productos. El OCR local se incorporará como módulo independiente.</p><button className="primary" onClick={openNew}>Añadir primer ticket</button></div>
+        <div className="panel empty-large"><ReceiptText size={36} /><h3>Aún no has añadido tickets</h3><p>Empieza con uno: puedes leerlo con el OCR local o registrar los productos a mano.</p><button className="primary" onClick={openNew}>Añadir primer ticket</button></div>
       ) : (
         <div className="ticket-grid">
           {tickets.map((ticket) => {
@@ -684,7 +685,7 @@ function SettingsView() {
         <div className="panel setting-card danger-zone"><Trash2 size={24} /><h3>Borrar datos</h3><p>Elimina compras e histórico de este navegador.</p><button className="danger-button" onClick={wipe}>Borrar todo</button></div>
       </div>
       {status && <div className="status-banner">{status}</div>}
-      <div className="panel roadmap"><h3>Siguientes módulos previstos</h3><div className="roadmap-grid"><RoadmapItem n="01" title="OCR local" text="Tesseract.js, reglas por supermercado y pantalla de revisión." /><RoadmapItem n="02" title="Conectores" text="Mercadona, Eroski, Lidl, Aldi, DIA, Alcampo… con precio actual." /><RoadmapItem n="03" title="Cesta inteligente" text="Lista de compra y reparto óptimo entre supermercados." /><RoadmapItem n="04" title="Aprendizaje" text="Recordar abreviaturas de ticket, equivalencias y correcciones." /></div></div>
+      <div className="panel roadmap"><h3>Siguientes módulos previstos</h3><div className="roadmap-grid"><RoadmapItem n="01" title="OCR local ✓" text="Ya disponible: imagen y PDF, reglas por cadena y pantalla de revisión previa." /><RoadmapItem n="02" title="Conectores" text="Mercadona, Eroski, Lidl, Aldi, DIA, Alcampo… con precio actual." /><RoadmapItem n="03" title="Cesta inteligente" text="Lista de compra y reparto óptimo entre supermercados." /><RoadmapItem n="04" title="Aprendizaje" text="Recordar abreviaturas de ticket, equivalencias y correcciones." /></div></div>
     </section>
   );
 }
