@@ -10,6 +10,7 @@ import {
   FileUp,
   History,
   Home,
+  ImagePlus,
   PackageSearch,
   Plus,
   ReceiptText,
@@ -327,6 +328,7 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
         packageUnit: p.packageUnit,
         price: p.price,
         discount: p.discount,
+        ...(product?.photoBlob ? { photoName: product.photoName ?? 'producto', photoType: product.photoType ?? product.photoBlob.type, photoBlob: product.photoBlob } : {}),
       } satisfies TicketLineDraft;
     });
     setSupermarketId(existingTicket.supermarketId);
@@ -374,11 +376,19 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
         const genericName = line.genericName.trim() || name;
         let product = await db.products.filter((p) => p.name.toLowerCase() === name.toLowerCase() && p.brand.toLowerCase() === brand.toLowerCase()).first();
         if (!product) {
-          const productId = await db.products.add({ name, brand, genericName, category: line.category.trim() || 'Sin categoría', rating: 0, notes: '' });
+          const productId = await db.products.add({
+            name, brand, genericName, category: line.category.trim() || 'Sin categoría', rating: 0, notes: '',
+            ...(line.photoBlob ? { photoName: line.photoName, photoType: line.photoType, photoBlob: line.photoBlob } : {}),
+          });
           product = await db.products.get(productId);
-        } else if (product.genericName !== genericName || product.category !== line.category) {
-          await db.products.update(product.id!, { genericName, category: line.category.trim() || 'Sin categoría' });
-          product = { ...product, genericName, category: line.category };
+        } else if (product.genericName !== genericName || product.category !== line.category || line.photoBlob) {
+          const updates = {
+            genericName,
+            category: line.category.trim() || 'Sin categoría',
+            ...(line.photoBlob ? { photoName: line.photoName, photoType: line.photoType, photoBlob: line.photoBlob } : {}),
+          };
+          await db.products.update(product.id!, updates);
+          product = { ...product, ...updates };
         }
         const rawKey = line.productName.trim().toLowerCase();
         const existingEq = await db.equivalences.where('rawName').equals(rawKey).first();
@@ -423,10 +433,22 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
         {ocrReview && <OcrReview result={ocrReview} onCancel={() => setOcrReview(null)} onApply={applyOcrLines} />}
         <div className="line-table-wrap">
           <table className="line-table">
-            <thead><tr><th>Producto</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th></th></tr></thead>
+            <thead><tr><th>Foto</th><th>Producto</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th></th></tr></thead>
             <tbody>
               {lines.map((line) => (
                 <tr key={line.id}>
+                  <td>
+                    <label className="product-photo-picker" title="Subir foto del producto">
+                      {line.photoBlob ? <ProductPhoto blob={line.photoBlob} alt={line.productName || 'Producto'} /> : <ImagePlus size={18} />}
+                      <input type="file" accept="image/*" capture="environment" onChange={(e) => {
+                        const photo = e.target.files?.[0];
+                        if (!photo) return;
+                        if (photo.size > 8 * 1024 * 1024) { setError('La foto del producto no puede superar 8 MB.'); return; }
+                        setError('');
+                        updateLine(line.id, { photoName: photo.name, photoType: photo.type, photoBlob: photo });
+                      }} />
+                    </label>
+                  </td>
                   <td><input value={line.productName} onChange={(e) => updateLine(line.id, { productName: e.target.value })} placeholder="Atún Hacendado" /></td>
                   <td><input value={line.genericName} onChange={(e) => updateLine(line.id, { genericName: e.target.value })} placeholder="Atún en aceite de oliva" /></td>
                   <td><input value={line.brand} onChange={(e) => updateLine(line.id, { brand: e.target.value })} placeholder="Hacendado" /></td>
@@ -554,7 +576,7 @@ function ProductsView() {
             const market = supermarkets.find((s) => s.id === latest?.supermarketId)?.name;
             return (
               <article className="product-row" key={product.id}>
-                <div className="product-main"><div className="product-icon"><ShoppingBasket size={19} /></div><div><strong>{product.name}</strong><span>{product.brand || 'Sin marca'} · {product.category}</span></div></div>
+                <div className="product-main"><div className="product-icon">{product.photoBlob ? <ProductPhoto blob={product.photoBlob} alt={product.name} /> : <ShoppingBasket size={19} />}</div><div><strong>{product.name}</strong><span>{product.brand || 'Sin marca'} · {product.category}</span></div></div>
                 <label className="inline-field">Equivalente a<input value={product.genericName} onChange={(e) => updateGenericName(product, e.target.value)} /></label>
                 <div className="rating" aria-label={`Valoración ${product.rating} de 5`}>{[1,2,3,4,5].map((n) => <button key={n} aria-label={`${n} estrellas`} onClick={() => setRating(product, n)} className={n <= product.rating ? 'star active' : 'star'}><Star size={19} fill={n <= product.rating ? 'currentColor' : 'none'} /></button>)}</div>
                 <div className="latest-price"><span>{market ? `Último: ${market}` : 'Sin compras'}</span><strong>{latest ? formatUnitPrice(latest.normalizedUnitPrice, latest.normalizedUnit) : '—'}</strong></div>
@@ -566,6 +588,12 @@ function ProductsView() {
       )}
     </section>
   );
+}
+
+function ProductPhoto({ blob, alt }: { blob: Blob; alt: string }) {
+  const url = useMemo(() => URL.createObjectURL(blob), [blob]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  return <img className="product-photo" src={url} alt={alt} />;
 }
 
 function CompareView() {
@@ -651,7 +679,8 @@ function SettingsView() {
   async function exportData() {
     const [supermarkets, tickets, products, purchases] = await Promise.all([db.supermarkets.toArray(), db.tickets.toArray(), db.products.toArray(), db.purchases.toArray()]);
     const serializedTickets = await Promise.all(tickets.map(async (t) => ({ ...t, fileBlob: t.fileBlob ? await blobToDataUrl(t.fileBlob) : undefined })));
-    const payload = { version: 1, exportedAt: new Date().toISOString(), supermarkets, tickets: serializedTickets, products, purchases };
+    const serializedProducts = await Promise.all(products.map(async (p) => ({ ...p, photoBlob: p.photoBlob ? await blobToDataUrl(p.photoBlob) : undefined })));
+    const payload = { version: 1, exportedAt: new Date().toISOString(), supermarkets, tickets: serializedTickets, products: serializedProducts, purchases };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `smartmarket-backup-${todayISO()}.json`; a.click(); URL.revokeObjectURL(url);
     setStatus('Copia de seguridad exportada correctamente.');
@@ -662,9 +691,10 @@ function SettingsView() {
       const data = JSON.parse(await file.text());
       if (data.version !== 1 || !Array.isArray(data.tickets) || !Array.isArray(data.products)) throw new Error('Formato no válido');
       const restoredTickets = await Promise.all(data.tickets.map(async (t: any) => ({ ...t, fileBlob: typeof t.fileBlob === 'string' ? dataUrlToBlob(t.fileBlob) : undefined })));
+      const restoredProducts = await Promise.all(data.products.map(async (p: any) => ({ ...p, photoBlob: typeof p.photoBlob === 'string' ? dataUrlToBlob(p.photoBlob) : undefined })));
       await db.transaction('rw', db.supermarkets, db.tickets, db.products, db.purchases, async () => {
         await Promise.all([db.supermarkets.clear(), db.tickets.clear(), db.products.clear(), db.purchases.clear()]);
-        await db.supermarkets.bulkAdd(data.supermarkets); await db.products.bulkAdd(data.products); await db.tickets.bulkAdd(restoredTickets); await db.purchases.bulkAdd(data.purchases);
+        await db.supermarkets.bulkAdd(data.supermarkets); await db.products.bulkAdd(restoredProducts); await db.tickets.bulkAdd(restoredTickets); await db.purchases.bulkAdd(data.purchases);
       });
       setStatus('Copia restaurada. Recarga la página si algún contador tarda en actualizarse.');
     } catch { setStatus('No se pudo importar el archivo: no parece una copia válida de SmartMarket.'); }

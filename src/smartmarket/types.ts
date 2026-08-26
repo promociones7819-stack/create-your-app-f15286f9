@@ -25,6 +25,9 @@ export interface Product {
   barcode?: string;
   rating: number;
   notes: string;
+  photoName?: string;
+  photoType?: string;
+  photoBlob?: Blob;
 }
 
 export interface Purchase {
@@ -54,6 +57,9 @@ export interface TicketLineDraft {
   packageUnit: PackageUnit;
   price: number;
   discount: number;
+  photoName?: string;
+  photoType?: string;
+  photoBlob?: Blob;
 }
 
 export interface Equivalence {

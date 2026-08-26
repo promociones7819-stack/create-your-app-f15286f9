@@ -19,5 +19,9 @@
 .ocr-review-actions{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:14px;border-top:1px solid #e7ebe8;padding-top:14px}
 .ocr-review-actions>span{font-size:11px;color:#78847e;max-width:420px}
 .ocr-review-actions>div{display:flex;gap:9px}
+.product-photo-picker{width:42px;height:42px;border:1px dashed #a9bcb1;border-radius:10px;display:grid;place-items:center;color:#426c57;background:#f4f7f5;cursor:pointer;overflow:hidden}
+.product-photo-picker input{position:absolute;width:1px!important;height:1px!important;opacity:0;pointer-events:none}
+.product-photo{width:100%;height:100%;object-fit:cover;display:block}
+.product-icon:has(.product-photo){overflow:hidden;padding:0}
 @media(max-width:1100px){.hero-grid,.content-grid.two,.settings-grid,.roadmap-grid{grid-template-columns:1fr}.metrics-grid{grid-template-columns:repeat(2,1fr)}.ticket-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:860px){.app-shell{grid-template-columns:1fr}.sidebar{position:static;height:auto;flex-direction:row;align-items:center;gap:14px;overflow-x:auto}.sidebar nav{display:flex;gap:6px}.privacy-card{display:none}.page,.topbar{padding-left:16px;padding-right:16px}.ticket-grid{grid-template-columns:1fr}.product-row{grid-template-columns:1fr;gap:10px}.page-heading{flex-direction:column;align-items:stretch}.search{width:100%}.ocr-note-body,.ocr-review-actions{flex-direction:column;align-items:stretch}}
