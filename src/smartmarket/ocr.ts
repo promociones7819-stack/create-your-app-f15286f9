@@ -3,10 +3,43 @@
 
 export type OcrProgress = (stage: string, progress: number) => void;
 
-async function pdfToText(file: File, onProgress?: OcrProgress): Promise<string> {
+/**
+ * PDF.js usa Promise.withResolvers, que no está disponible en algunas versiones
+ * de Safari todavía presentes en iPhone, iPad y macOS. Debe instalarse antes del
+ * import dinámico porque PDF.js la invoca al evaluar el módulo.
+ */
+function ensurePdfJsCompatibility(): void {
+  const PromiseWithResolvers = Promise as typeof Promise & {
+    withResolvers?: <T>() => {
+      promise: Promise<T>;
+      resolve: (value: T | PromiseLike<T>) => void;
+      reject: (reason?: unknown) => void;
+    };
+  };
+
+  if (!PromiseWithResolvers.withResolvers) {
+    PromiseWithResolvers.withResolvers = <T>() => {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      return { promise, resolve, reject };
+    };
+  }
+}
+
+async function loadPdfJs() {
+  ensurePdfJsCompatibility();
   const pdfjs: any = await import("pdfjs-dist");
   const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+  return pdfjs;
+}
+
+async function pdfToText(file: File, onProgress?: OcrProgress): Promise<string> {
+  const pdfjs = await loadPdfJs();
 
   const buffer = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: buffer }).promise;
@@ -30,9 +63,7 @@ async function pdfToText(file: File, onProgress?: OcrProgress): Promise<string> 
 }
 
 async function pdfFirstPageToCanvas(file: File): Promise<HTMLCanvasElement> {
-  const pdfjs: any = await import("pdfjs-dist");
-  const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+  const pdfjs = await loadPdfJs();
   const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   const page = await pdf.getPage(1);
   const viewport = page.getViewport({ scale: 2.2 });
