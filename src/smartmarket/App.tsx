@@ -288,8 +288,8 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
       const eqs = await db.equivalences.toArray();
       const map = Object.fromEntries(eqs.map((e) => [e.rawName, e.genericName]));
       const text = await extractText(file, (stage, progress) => { setOcrStage(stage); setOcrProgress(progress); });
-      setOcrReview(parseReceiptText(text, map));
       const parsed = parseReceiptText(text, map);
+      setOcrReview(parsed);
       if (parsed.date) setDate(parsed.date);
       if (parsed.supermarket) {
         const match = supermarkets.find((s) => s.name.toLowerCase() === parsed.supermarket!.toLowerCase());
