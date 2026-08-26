@@ -1,24 +1,39 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { lazy, Suspense, useEffect, useState } from "react";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
+import smartmarketCss from "../smartmarket/smartmarket.css?url";
+
+const App = lazy(() => import("../smartmarket/App"));
+
+const title = "SmartMarket Local — Compara precios de supermercado";
+const description =
+  "Guarda tus tickets, normaliza precios a €/kg, €/L o unidad y compara marcas entre supermercados. Todo se queda en tu dispositivo.";
+
 export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title },
+      { name: "description", content: description },
+      { property: "og:title", content: title },
+      { property: "og:description", content: description },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+    ],
+    links: [{ rel: "stylesheet", href: smartmarketCss }],
+  }),
   component: Index,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
 function Index() {
+  // La app es local-first (IndexedDB/Dexie): solo puede montarse en el navegador.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  if (!mounted) return <div className="boot">Preparando la base de datos local…</div>;
+
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
-    </div>
+    <Suspense fallback={<div className="boot">Cargando SmartMarket…</div>}>
+      <App />
+    </Suspense>
   );
 }
