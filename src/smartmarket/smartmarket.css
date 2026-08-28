@@ -31,6 +31,35 @@ button {
   padding: 48px;
   color: #43504a;
 }
+.boot-error {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  max-width: 620px;
+  margin: 0 auto;
+  padding-top: 15vh;
+}
+.boot-error > svg {
+  flex: 0 0 auto;
+  color: #b4453e;
+}
+.boot-error strong,
+.boot-error small {
+  display: block;
+}
+.boot-error strong {
+  font-size: 20px;
+  color: #18221e;
+}
+.boot-error p {
+  line-height: 1.55;
+  margin: 8px 0;
+}
+.boot-error small {
+  color: #8a5b56;
+  margin-bottom: 18px;
+}
 .app-shell {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);

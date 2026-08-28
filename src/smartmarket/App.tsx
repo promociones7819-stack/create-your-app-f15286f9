@@ -106,12 +106,69 @@ const emptyLine = (): TicketLineDraft => ({
 function App() {
   const [view, setView] = useState<View>("dashboard");
   const [ready, setReady] = useState(false);
+  const [bootError, setBootError] = useState("");
+  const [bootAttempt, setBootAttempt] = useState(0);
 
   useEffect(() => {
-    ensureDefaults().then(() => setReady(true));
-  }, []);
+    let active = true;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    setBootError("");
+    setReady(false);
 
-  if (!ready) return <div className="boot">Preparando la base de datos local…</div>;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error("La base de datos local no respondió a tiempo.")),
+        10_000,
+      );
+    });
+
+    Promise.race([ensureDefaults(), timeout])
+      .then(() => {
+        if (active) setReady(true);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        const detail = error instanceof Error ? error.message : "Error desconocido";
+        setBootError(detail);
+      })
+      .finally(() => {
+        if (timeoutId) clearTimeout(timeoutId);
+      });
+
+    return () => {
+      active = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [bootAttempt]);
+
+  function retryBoot() {
+    db.close();
+    setBootAttempt((attempt) => attempt + 1);
+  }
+
+  if (!ready)
+    return (
+      <div className={bootError ? "boot boot-error" : "boot"}>
+        {bootError ? (
+          <>
+            <AlertTriangle size={28} />
+            <div>
+              <strong>Safari no ha podido abrir los datos locales</strong>
+              <p>
+                Cierra otras pestañas de SmartMarket y vuelve a intentarlo. Tus tickets no se
+                borrarán.
+              </p>
+              <small>{bootError}</small>
+              <button className="primary" onClick={retryBoot}>
+                Reintentar
+              </button>
+            </div>
+          </>
+        ) : (
+          "Preparando la base de datos local…"
+        )}
+      </div>
+    );
 
   return (
     <div className="app-shell">
