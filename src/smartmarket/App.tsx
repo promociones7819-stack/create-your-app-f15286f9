@@ -69,6 +69,7 @@ type View =
   | "dashboard"
   | "tickets"
   | "products"
+  | "supermarkets"
   | "shopping-list"
   | "compare"
   | "history"
@@ -193,6 +194,7 @@ function App() {
         {view === "dashboard" && <Dashboard onGo={setView} />}
         {view === "tickets" && <TicketsView />}
         {view === "products" && <ProductsView />}
+        {view === "supermarkets" && <SupermarketsView />}
         {view === "shopping-list" && <ShoppingListView />}
         {view === "compare" && <CompareView />}
         {view === "history" && <HistoryView />}
@@ -208,6 +210,7 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
     { id: "dashboard", label: "Inicio", icon: Home },
     { id: "tickets", label: "Tickets", icon: ReceiptText },
     { id: "products", label: "Productos", icon: ShoppingBasket },
+    { id: "supermarkets", label: "Supermercados", icon: Store },
     { id: "shopping-list", label: "Lista de la compra", icon: ListChecks },
     { id: "compare", label: "Comparador", icon: Scale },
     { id: "history", label: "Histórico", icon: History },
@@ -1284,11 +1287,6 @@ function ProductsView() {
           })}
         </div>
       )}
-      <StoreProductDirectory
-        products={products}
-        purchases={purchases}
-        supermarkets={supermarkets}
-      />
     </section>
   );
 }
@@ -1299,14 +1297,52 @@ function ProductPhoto({ blob, alt }: { blob: Blob; alt: string }) {
   return <img className="product-photo" src={url} alt={alt} />;
 }
 
+function SupermarketsView() {
+  const productRecords = useLiveQuery(() => db.products.toArray(), []);
+  const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
+  const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
+  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
+  const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
+  const storesWithPurchases = new Set(purchases.map((purchase) => purchase.supermarketId)).size;
+
+  return (
+    <section className="page">
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">TUS TIENDAS</span>
+          <h2>Supermercados y productos comprados</h2>
+          <p>
+            Consulta todos los productos distintos registrados en cada supermercado y su último
+            precio conocido.
+          </p>
+        </div>
+        <div className="directory-count">
+          <Store size={19} />
+          <strong>{storesWithPurchases}</strong>
+          <span>con compras</span>
+        </div>
+      </div>
+      <StoreProductDirectory
+        products={products}
+        purchases={purchases}
+        supermarkets={supermarkets}
+        standalone
+      />
+    </section>
+  );
+}
+
 function StoreProductDirectory({
   products,
   purchases,
   supermarkets,
+  standalone = false,
 }: {
   products: Product[];
   purchases: Purchase[];
   supermarkets: Supermarket[];
+  standalone?: boolean;
 }) {
   const stores = supermarkets
     .map((supermarket) => {
@@ -1327,16 +1363,23 @@ function StoreProductDirectory({
     .filter((store) => store.rows.length > 0)
     .sort((a, b) => b.rows.length - a.rows.length);
 
-  if (!stores.length) return null;
-  return (
-    <div className="store-directory">
-      <div className="page-heading compact-heading">
-        <div>
-          <span className="eyebrow">POR SUPERMERCADO</span>
-          <h2>Productos comprados en cada tienda</h2>
-          <p>Se muestra el último precio conocido de cada producto.</p>
-        </div>
+  if (!stores.length)
+    return (
+      <div className="panel">
+        <Empty text="Añade tickets para ver qué productos has comprado en cada supermercado." />
       </div>
+    );
+  return (
+    <div className={standalone ? "store-directory standalone" : "store-directory"}>
+      {!standalone && (
+        <div className="page-heading compact-heading">
+          <div>
+            <span className="eyebrow">POR SUPERMERCADO</span>
+            <h2>Productos comprados en cada tienda</h2>
+            <p>Se muestra el último precio conocido de cada producto.</p>
+          </div>
+        </div>
+      )}
       <div className="store-product-grid">
         {stores.map(({ supermarket, rows }) => (
           <article className="panel store-product-card" key={supermarket.id}>

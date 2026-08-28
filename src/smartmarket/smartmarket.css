@@ -658,10 +658,9 @@ button {
   border-radius: 13px;
   padding: 13px 15px;
   display: grid;
-  grid-template-columns: minmax(190px, 1.2fr) minmax(180px, 1fr) minmax(160px, 0.8fr) 135px minmax(
-      145px,
-      0.7fr
-    ) 40px;
+  grid-template-columns:
+    minmax(190px, 1.2fr) minmax(180px, 1fr) minmax(160px, 0.8fr) 135px minmax(145px, 0.7fr)
+    40px;
   gap: 14px;
   align-items: center;
 }
@@ -711,6 +710,25 @@ button {
 }
 .store-directory {
   margin-top: 34px;
+}
+.store-directory.standalone {
+  margin-top: 0;
+}
+.directory-count {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: #e3efe9;
+  color: #276246;
+  padding: 10px 13px;
+  border-radius: 12px;
+}
+.directory-count strong {
+  font-size: 18px;
+}
+.directory-count span {
+  font-size: 11px;
+  font-weight: 700;
 }
 .compact-heading {
   margin-bottom: 16px;
