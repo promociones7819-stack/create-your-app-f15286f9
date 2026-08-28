@@ -1894,28 +1894,89 @@ function HistoryView() {
   const markets = Array.from(
     new Set(relevant.map((p) => p.supermarket?.name).filter(Boolean)),
   ) as string[];
-  const series = Array.from(
-    new Set(
-      relevant.map(
+  const months = Array.from(new Set(relevant.map((purchase) => purchase.date.slice(0, 7)))).sort();
+  const monthlyRows = months.flatMap((month) =>
+    selected.flatMap((genericName) => {
+      const rows = relevant.filter(
         (purchase) =>
-          `${purchase.product?.genericName ?? "Producto"} · ${purchase.supermarket?.name ?? "Otro"}`,
-      ),
-    ),
-  );
-  const chartData = relevant.map((p, i) => ({
-    index: i + 1,
-    date: p.date,
-    label: new Date(`${p.date}T00:00:00`).toLocaleDateString("es-ES", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "2-digit",
+          purchase.date.startsWith(month) && purchase.product?.genericName === genericName,
+      );
+      if (!rows.length) return [];
+      const prices = rows.map((row) => row.normalizedUnitPrice);
+      return [
+        {
+          month,
+          genericName,
+          unit: rows[0]!.normalizedUnit,
+          average: prices.reduce((sum, price) => sum + price, 0) / prices.length,
+          minimum: Math.min(...prices),
+          maximum: Math.max(...prices),
+          stores: new Set(rows.map((row) => row.supermarketId)).size,
+          records: rows.length,
+        },
+      ];
     }),
-    [`${p.product?.genericName ?? "Producto"} · ${p.supermarket?.name ?? "Otro"}`]: Number(
-      p.normalizedUnitPrice.toFixed(2),
-    ),
-  }));
-  const categories = new Set(relevant.map((purchase) => purchase.product?.category).filter(Boolean))
-    .size;
+  );
+  const chartData = months.map((month) => {
+    const point: Record<string, string | number> = {
+      month,
+      label: new Date(`${month}-01T00:00:00`).toLocaleDateString("es-ES", {
+        month: "short",
+        year: "2-digit",
+      }),
+    };
+    for (const row of monthlyRows.filter((candidate) => candidate.month === month))
+      point[row.genericName] = Number(row.average.toFixed(2));
+    return point;
+  });
+  const supermarketAverages = selected.flatMap((genericName) =>
+    markets.flatMap((market) => {
+      const rows = relevant.filter(
+        (purchase) =>
+          purchase.product?.genericName === genericName && purchase.supermarket?.name === market,
+      );
+      if (!rows.length) return [];
+      return [
+        {
+          genericName,
+          market,
+          unit: rows[0]!.normalizedUnit,
+          average:
+            rows.reduce((sum, purchase) => sum + purchase.normalizedUnitPrice, 0) / rows.length,
+          latest: rows[rows.length - 1]!,
+          records: rows.length,
+        },
+      ];
+    }),
+  );
+  const years = Array.from(new Set(relevant.map((purchase) => purchase.date.slice(0, 4)))).sort(
+    (a, b) => b.localeCompare(a),
+  );
+  const annualRows = years.flatMap((year) =>
+    selected.flatMap((genericName) => {
+      const rows = relevant.filter(
+        (purchase) =>
+          purchase.date.startsWith(year) && purchase.product?.genericName === genericName,
+      );
+      if (!rows.length) return [];
+      const prices = rows.map((row) => row.normalizedUnitPrice);
+      const first = rows[0]!.normalizedUnitPrice;
+      const last = rows[rows.length - 1]!.normalizedUnitPrice;
+      return [
+        {
+          year,
+          genericName,
+          unit: rows[0]!.normalizedUnit,
+          average: prices.reduce((sum, price) => sum + price, 0) / prices.length,
+          minimum: Math.min(...prices),
+          maximum: Math.max(...prices),
+          variation: first ? (last / first - 1) * 100 : 0,
+          months: new Set(rows.map((row) => row.date.slice(0, 7))).size,
+          stores: new Set(rows.map((row) => row.supermarketId)).size,
+        },
+      ];
+    }),
+  );
 
   return (
     <section className="page">
@@ -1937,9 +1998,16 @@ function HistoryView() {
             <Metric icon={History} label="Registros" value={String(relevant.length)} />
             <Metric icon={ShoppingBasket} label="Productos" value={String(selected.length)} />
             <Metric icon={Store} label="Supermercados" value={String(markets.length)} />
-            <Metric icon={PackageSearch} label="Categorías" value={String(categories)} />
+            <Metric icon={BarChart3} label="Meses analizados" value={String(months.length)} />
           </div>
           <div className="panel chart-panel">
+            <div className="panel-title">
+              <div>
+                <h3>Evolución mensual</h3>
+                <p>Precio medio comparable de todos los supermercados en cada mes.</p>
+              </div>
+              <BarChart3 size={20} />
+            </div>
             <div className="chart-height">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
@@ -1948,7 +2016,7 @@ function HistoryView() {
                   <YAxis />
                   <Tooltip formatter={(value) => money(Number(value))} />
                   <Legend />
-                  {series.map((seriesName, i) => (
+                  {selected.map((seriesName, i) => (
                     <Line
                       key={seriesName}
                       type="monotone"
@@ -1966,36 +2034,133 @@ function HistoryView() {
               </ResponsiveContainer>
             </div>
           </div>
-          <div className="panel table-panel">
+          <div className="history-summary-grid">
+            <div className="panel table-panel">
+              <div className="panel-title">
+                <div>
+                  <h3>Media por supermercado</h3>
+                  <p>Media histórica y último precio registrado.</p>
+                </div>
+                <Store size={20} />
+              </div>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Producto</th>
+                    <th>Supermercado</th>
+                    <th>Media</th>
+                    <th>Último</th>
+                    <th>Registros</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {supermarketAverages
+                    .sort(
+                      (a, b) => a.genericName.localeCompare(b.genericName) || a.average - b.average,
+                    )
+                    .map((row) => (
+                      <tr key={`${row.genericName}-${row.market}`}>
+                        <td>
+                          <strong>{row.genericName}</strong>
+                        </td>
+                        <td>{row.market}</td>
+                        <td className="strong-cell">{formatUnitPrice(row.average, row.unit)}</td>
+                        <td>
+                          {formatUnitPrice(
+                            row.latest.normalizedUnitPrice,
+                            row.latest.normalizedUnit,
+                          )}
+                        </td>
+                        <td>{row.records}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="panel table-panel annual-summary">
+              <div className="panel-title">
+                <div>
+                  <h3>Resumen anual</h3>
+                  <p>Media, rango y evolución dentro de cada año.</p>
+                </div>
+                <History size={20} />
+              </div>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Año</th>
+                    <th>Producto</th>
+                    <th>Media</th>
+                    <th>Mín.–Máx.</th>
+                    <th>Variación</th>
+                    <th>Cobertura</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {annualRows.map((row) => (
+                    <tr key={`${row.year}-${row.genericName}`}>
+                      <td>
+                        <strong>{row.year}</strong>
+                      </td>
+                      <td>{row.genericName}</td>
+                      <td className="strong-cell">{formatUnitPrice(row.average, row.unit)}</td>
+                      <td>
+                        {money(row.minimum)}–{money(row.maximum)}
+                      </td>
+                      <td>
+                        <span
+                          className={
+                            row.variation > 0 ? "price-difference up" : "price-difference down"
+                          }
+                        >
+                          {pct(row.variation)}
+                        </span>
+                      </td>
+                      <td>
+                        {row.months} meses · {row.stores} tiendas
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="panel table-panel monthly-detail">
+            <div className="panel-title">
+              <div>
+                <h3>Detalle mensual</h3>
+                <p>Media y rango observado durante cada mes.</p>
+              </div>
+            </div>
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Fecha</th>
+                  <th>Mes</th>
                   <th>Producto</th>
-                  <th>Supermercado</th>
-                  <th>Formato</th>
-                  <th>Precio</th>
-                  <th>Comparable</th>
+                  <th>Media</th>
+                  <th>Mínimo</th>
+                  <th>Máximo</th>
+                  <th>Supermercados</th>
+                  <th>Registros</th>
                 </tr>
               </thead>
               <tbody>
-                {[...relevant].reverse().map((p) => (
-                  <tr key={p.id}>
-                    <td>{new Date(`${p.date}T00:00:00`).toLocaleDateString("es-ES")}</td>
+                {[...monthlyRows].reverse().map((row) => (
+                  <tr key={`${row.month}-${row.genericName}`}>
                     <td>
-                      <div className="table-product">
-                        {p.product && <ProductThumbnail product={p.product} />}
-                        <strong>{p.product?.name}</strong>
-                      </div>
+                      {new Date(`${row.month}-01T00:00:00`).toLocaleDateString("es-ES", {
+                        month: "long",
+                        year: "numeric",
+                      })}
                     </td>
-                    <td>{p.supermarket?.name}</td>
                     <td>
-                      {p.packageAmount} {p.packageUnit}
+                      <strong>{row.genericName}</strong>
                     </td>
-                    <td>{money(p.price - p.discount)}</td>
-                    <td className="strong-cell">
-                      {formatUnitPrice(p.normalizedUnitPrice, p.normalizedUnit)}
-                    </td>
+                    <td className="strong-cell">{formatUnitPrice(row.average, row.unit)}</td>
+                    <td>{formatUnitPrice(row.minimum, row.unit)}</td>
+                    <td>{formatUnitPrice(row.maximum, row.unit)}</td>
+                    <td>{row.stores}</td>
+                    <td>{row.records}</td>
                   </tr>
                 ))}
               </tbody>
