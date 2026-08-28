@@ -1123,12 +1123,38 @@ button {
   font-size: 8px;
   font-weight: 900;
 }
-.public-offer > strong { font-size: 22px; color: #173e31; }
+.public-offer-prices {
+  text-align: right;
+}
+.public-offer-prices strong,
+.public-offer-prices span {
+  display: block;
+}
+.public-offer-prices strong { font-size: 22px; color: #173e31; }
+.public-offer-prices span { color: #748078; font-size: 9px; }
 .public-offer h4,
 .public-offer p,
 .public-offer em { grid-column: 1 / -1; margin: 0; }
 .public-offer h4 { font-size: 13px; line-height: 1.35; }
 .public-offer p { color: #748078; font-size: 10px; }
+.public-offer .public-unit-price {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: #edf5ef;
+  color: #1f5d3d;
+  font-size: 14px;
+  font-weight: 900;
+}
+.public-unit-price span {
+  color: #68746e;
+  font-size: 9px;
+  font-weight: 700;
+  text-align: right;
+}
 .public-offer em {
   display: inline-flex;
   align-items: center;

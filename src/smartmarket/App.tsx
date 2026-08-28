@@ -100,6 +100,9 @@ type PublicOffer = {
   url: string;
   location: string;
   onlinePrice: true;
+  comparablePrice: number | null;
+  comparableUnit: "kg" | "l" | "ud" | null;
+  format: string | null;
 };
 type PublicOffersResponse = {
   query: string;
@@ -1486,7 +1489,10 @@ function PublicOffersPanel({ query }: { query: string }) {
   }, [query]);
 
   if (!query) return null;
-  const lowestPrice = result?.offers[0]?.price;
+  const comparableOffers = result?.offers.filter((offer) => offer.comparablePrice !== null) ?? [];
+  const lowestComparablePrice = comparableOffers.length
+    ? Math.min(...comparableOffers.map((offer) => offer.comparablePrice as number))
+    : undefined;
 
   return (
     <section className="panel public-offers" aria-live="polite">
@@ -1511,7 +1517,11 @@ function PublicOffersPanel({ query }: { query: string }) {
             <div className="public-offer-grid">
               {result.offers.slice(0, 6).map((offer) => (
                 <a
-                  className={offer.price === lowestPrice ? "public-offer cheapest" : "public-offer"}
+                  className={
+                    offer.comparablePrice === lowestComparablePrice
+                      ? "public-offer cheapest"
+                      : "public-offer"
+                  }
                   href={offer.url}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -1519,10 +1529,21 @@ function PublicOffersPanel({ query }: { query: string }) {
                 >
                   <div>
                     <span>{offer.supermarket}</span>
-                    {offer.price === lowestPrice && <small>MEJOR PRECIO ENCONTRADO</small>}
+                    {offer.comparablePrice === lowestComparablePrice && (
+                      <small>MEJOR PRECIO COMPARABLE</small>
+                    )}
                   </div>
-                  <strong>{money(offer.price)}</strong>
+                  <div className="public-offer-prices">
+                    <strong>{money(offer.price)}</strong>
+                    <span>envase</span>
+                  </div>
                   <h4>{offer.name}</h4>
+                  <p className="public-unit-price">
+                    {offer.comparablePrice !== null && offer.comparableUnit
+                      ? formatUnitPrice(offer.comparablePrice, offer.comparableUnit)
+                      : "Precio por unidad no disponible"}
+                    {offer.format ? <span>Formato: {offer.format}</span> : null}
+                  </p>
                   <p>{offer.location}</p>
                   <em>
                     Ver fuente <ExternalLink size={13} />

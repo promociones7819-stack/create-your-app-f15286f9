@@ -7,6 +7,9 @@ type PublicOffer = {
   url: string;
   location: string;
   onlinePrice: true;
+  comparablePrice: number | null;
+  comparableUnit: "kg" | "l" | "ud" | null;
+  format: string | null;
 };
 
 const SEARCH_AREA = {
@@ -37,6 +40,61 @@ function decodeHtml(value: string) {
     .replace(/&gt;/g, ">");
 }
 
+function comparablePriceFromName(name: string, price: number) {
+  const normalized = name.toLocaleLowerCase("es-ES").replace(/,/g, ".");
+  const unitPattern = "kg|kilos?|g|gramos?|l|litros?|ml|mililitros?|cl|centilitros?|uds?|unidades?";
+  const multipack = normalized.match(
+    new RegExp(`(\\d+)\\s*(?:x|×)\\s*(\\d+(?:\\.\\d+)?)\\s*(${unitPattern})\\b`),
+  );
+  let packages = 1;
+  let amount = 0;
+  let rawUnit = "";
+
+  if (multipack) {
+    packages = Number(multipack[1]);
+    amount = Number(multipack[2]);
+    rawUnit = multipack[3] ?? "";
+  } else {
+    const matches = [
+      ...normalized.matchAll(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${unitPattern})\\b`, "g")),
+    ];
+    const size = matches.at(-1);
+    if (!size) return { comparablePrice: null, comparableUnit: null, format: null } as const;
+    amount = Number(size[1]);
+    rawUnit = size[2] ?? "";
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(packages) || packages <= 0)
+    return { comparablePrice: null, comparableUnit: null, format: null } as const;
+
+  let baseAmount = amount * packages;
+  let comparableUnit: "kg" | "l" | "ud";
+  if (/^(g|gramo)/.test(rawUnit)) {
+    baseAmount /= 1000;
+    comparableUnit = "kg";
+  } else if (/^(kg|kilo)/.test(rawUnit)) {
+    comparableUnit = "kg";
+  } else if (/^(ml|mililitro)/.test(rawUnit)) {
+    baseAmount /= 1000;
+    comparableUnit = "l";
+  } else if (/^(cl|centilitro)/.test(rawUnit)) {
+    baseAmount /= 100;
+    comparableUnit = "l";
+  } else if (/^(l|litro)/.test(rawUnit)) {
+    comparableUnit = "l";
+  } else {
+    comparableUnit = "ud";
+  }
+
+  return {
+    comparablePrice: price / baseAmount,
+    comparableUnit,
+    format: multipack
+      ? `${packages} × ${String(amount).replace(".", ",")} ${rawUnit}`
+      : `${String(amount).replace(".", ",")} ${rawUnit}`,
+  };
+}
+
 function parseEroskiOffers(html: string): PublicOffer[] {
   const pattern =
     /data-metrics="\{&quot;event&quot;:&quot;select_item&quot;.*?&quot;price&quot;:([0-9.]+).*?&quot;item_name&quot;:&quot;([^&]*?)&quot;.*?href="([^"]*productdetail[^"]*)"/g;
@@ -57,10 +115,15 @@ function parseEroskiOffers(html: string): PublicOffer[] {
       url: rawUrl.replace("https://supermercado.eroski.es:443", "https://supermercado.eroski.es"),
       location: "Catálogo online para el área de Bizkaia",
       onlinePrice: true,
+      ...comparablePriceFromName(name, price),
     });
   }
 
-  return offers.sort((a, b) => a.price - b.price);
+  return offers.sort(
+    (a, b) =>
+      (a.comparablePrice ?? Number.POSITIVE_INFINITY) -
+        (b.comparablePrice ?? Number.POSITIVE_INFINITY) || a.price - b.price,
+  );
 }
 
 async function searchEroski(query: string) {
