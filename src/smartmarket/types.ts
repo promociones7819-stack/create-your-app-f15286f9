@@ -3,6 +3,8 @@ export type PackageUnit = 'g' | 'kg' | 'ml' | 'l' | 'ud';
 export interface Supermarket {
   id?: number;
   name: string;
+  locality?: string;
+  address?: string;
 }
 
 export interface Ticket {

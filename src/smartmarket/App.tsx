@@ -11,6 +11,8 @@ import {
   History,
   Home,
   ImagePlus,
+  ExternalLink,
+  MapPin,
   PackageSearch,
   Plus,
   ReceiptText,
@@ -36,7 +38,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { db, ensureDefaults } from './db';
+import { db, ensureDefaults, MEDINA_SUPERMARKETS } from './db';
 import { extractText } from './ocr';
 import { parseReceiptText, type OcrLineDraft, type OcrResult } from './parser';
 import type { PackageUnit, Product, Purchase, Supermarket, Ticket, TicketLineDraft } from './types';
@@ -45,9 +47,12 @@ import { formatUnitPrice, money, normalizeUnitPrice, parseNumber, pct, todayISO,
 // dexie-react-hooks is intentionally imported as a separate package to keep all persistence local.
 // See package.json; Lovable can safely edit this file without requiring a backend.
 
-type View = 'dashboard' | 'tickets' | 'products' | 'compare' | 'history' | 'settings';
+type View = 'dashboard' | 'tickets' | 'products' | 'compare' | 'history' | 'medina' | 'settings';
 
 type EnrichedPurchase = Purchase & { product: Product | undefined; supermarket: Supermarket | undefined };
+type ImportedTicket = Omit<Ticket, 'fileBlob'> & { fileBlob?: unknown };
+type ImportedProduct = Omit<Product, 'photoBlob'> & { photoBlob?: unknown };
+type BackupPayload = { version: number; supermarkets: Supermarket[]; tickets: ImportedTicket[]; products: ImportedProduct[]; purchases: Purchase[] };
 
 const emptyLine = (): TicketLineDraft => ({
   id: uid(),
@@ -82,6 +87,7 @@ function App() {
         {view === 'products' && <ProductsView />}
         {view === 'compare' && <CompareView />}
         {view === 'history' && <HistoryView />}
+        {view === 'medina' && <MedinaView />}
         {view === 'settings' && <SettingsView />}
       </main>
     </div>
@@ -95,6 +101,7 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
     { id: 'products', label: 'Productos', icon: ShoppingBasket },
     { id: 'compare', label: 'Comparador', icon: Scale },
     { id: 'history', label: 'Histórico', icon: History },
+    { id: 'medina', label: 'Medina de Pomar', icon: MapPin },
     { id: 'settings', label: 'Ajustes', icon: Settings },
   ];
 
@@ -412,7 +419,7 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
       <div className="modal" role="dialog" aria-modal="true" aria-label={ticketId ? 'Editar ticket' : 'Nuevo ticket'}>
         <div className="modal-head"><div><span className="eyebrow">{ticketId ? 'EDITAR' : 'NUEVO'}</span><h2>{ticketId ? 'Editar ticket' : 'Registrar ticket'}</h2></div><button className="icon-btn" onClick={onClose}><X size={20} /></button></div>
         <div className="form-grid three">
-          <label>Supermercado<select value={supermarketId} onChange={(e) => setSupermarketId(Number(e.target.value))}>{supermarkets.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+          <label>Supermercado<select value={supermarketId} onChange={(e) => setSupermarketId(Number(e.target.value))}>{supermarkets.map((s) => <option key={s.id} value={s.id}>{s.name}{s.locality ? ` · ${s.locality}` : ''}</option>)}</select></label>
           <label>Fecha<input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
           <label>Ticket (imagen/PDF)<input type="file" accept="image/*,.pdf,application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
         </div>
@@ -433,19 +440,26 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
         {ocrReview && <OcrReview result={ocrReview} onCancel={() => setOcrReview(null)} onApply={applyOcrLines} />}
         <div className="line-table-wrap">
           <table className="line-table">
-            <thead><tr><th>Foto</th><th>Producto</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th></th></tr></thead>
+            <thead><tr><th>Foto</th><th>Producto</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th>Precio comparable</th><th></th></tr></thead>
             <tbody>
               {lines.map((line) => (
                 <tr key={line.id}>
                   <td>
                     <label className="product-photo-picker" title="Subir foto del producto">
                       {line.photoBlob ? <ProductPhoto blob={line.photoBlob} alt={line.productName || 'Producto'} /> : <ImagePlus size={18} />}
-                      <input type="file" accept="image/*" capture="environment" onChange={(e) => {
+                      <input type="file" accept="image/*" capture="environment" aria-label={`${line.photoBlob ? 'Cambiar' : 'Añadir'} imagen de ${line.productName || 'producto'}`} onChange={async (e) => {
                         const photo = e.target.files?.[0];
                         if (!photo) return;
-                        if (photo.size > 8 * 1024 * 1024) { setError('La foto del producto no puede superar 8 MB.'); return; }
-                        setError('');
-                        updateLine(line.id, { photoName: photo.name, photoType: photo.type, photoBlob: photo });
+                        if (photo.size > 8 * 1024 * 1024) { setError('La foto del producto no puede superar 8 MB.'); e.target.value = ''; return; }
+                        try {
+                          const optimized = await optimizeProductPhoto(photo);
+                          setError('');
+                          updateLine(line.id, optimized);
+                        } catch {
+                          setError('No se pudo preparar la imagen. Prueba con una foto JPG, PNG o WebP.');
+                        } finally {
+                          e.target.value = '';
+                        }
                       }} />
                     </label>
                   </td>
@@ -456,6 +470,7 @@ function TicketEditor({ ticketId, supermarkets, products, purchases, onClose }: 
                   <td><input type="number" min="0.01" step="1" value={line.quantityPurchased} onChange={(e) => updateLine(line.id, { quantityPurchased: parseNumber(e.target.value) })} /></td>
                   <td><input type="number" min="0" step="0.01" value={line.price} onChange={(e) => updateLine(line.id, { price: parseNumber(e.target.value) })} /></td>
                   <td><input type="number" min="0" step="0.01" value={line.discount} onChange={(e) => updateLine(line.id, { discount: parseNumber(e.target.value) })} /></td>
+                  <td><span className="calculated-unit-price">{formatDraftUnitPrice(line)}</span></td>
                   <td><button className="icon-btn danger" onClick={() => setLines((p) => p.filter((x) => x.id !== line.id))}><Trash2 size={16} /></button></td>
                 </tr>
               ))}
@@ -509,7 +524,7 @@ function OcrReview({ result, onCancel, onApply }: {
         <div className="line-table-wrap">
           <table className="line-table">
             <thead>
-              <tr><th>Usar</th><th>Nombre en ticket</th><th>Nombre normalizado</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th>Fiab.</th></tr>
+              <tr><th>Usar</th><th>Nombre en ticket</th><th>Nombre normalizado</th><th>Producto genérico</th><th>Marca</th><th>Formato</th><th>Uds.</th><th>Precio</th><th>Dto.</th><th>Precio comparable</th><th>Fiab.</th></tr>
             </thead>
             <tbody>
               {draft.map((line) => (
@@ -530,6 +545,7 @@ function OcrReview({ result, onCancel, onApply }: {
                   <td><input type="number" step="1" value={line.quantityPurchased} onChange={(e) => update(line.id, { quantityPurchased: parseNumber(e.target.value) })} /></td>
                   <td><input type="number" step="0.01" value={line.price} onChange={(e) => update(line.id, { price: parseNumber(e.target.value) })} /></td>
                   <td><input type="number" step="0.01" value={line.discount} onChange={(e) => update(line.id, { discount: parseNumber(e.target.value) })} /></td>
+                  <td><span className="calculated-unit-price">{formatDraftUnitPrice(line)}</span></td>
                   <td><span className={`conf ${line.confidence}`}>{line.confidence}</span></td>
                 </tr>
               ))}
@@ -560,6 +576,23 @@ function ProductsView() {
 
   async function setRating(product: Product, rating: number) { if (product.id) await db.products.update(product.id, { rating }); }
   async function updateGenericName(product: Product, value: string) { if (product.id) await db.products.update(product.id, { genericName: value }); }
+  async function updatePhoto(product: Product, photo?: File) {
+    if (!product.id) return;
+    if (!photo) {
+      await db.products.update(product.id, (stored) => {
+        delete stored.photoName;
+        delete stored.photoType;
+        delete stored.photoBlob;
+      });
+      return;
+    }
+    if (photo.size > 8 * 1024 * 1024) return alert('La foto del producto no puede superar 8 MB.');
+    try {
+      await db.products.update(product.id, await optimizeProductPhoto(photo));
+    } catch {
+      alert('No se pudo preparar la imagen. Prueba con una foto JPG, PNG o WebP.');
+    }
+  }
   async function deleteProduct(product: Product) {
     if (!product.id || purchases.some((p) => p.productId === product.id)) return alert('Este producto tiene compras asociadas. Edita o elimina primero los tickets correspondientes.');
     await db.products.delete(product.id);
@@ -576,7 +609,16 @@ function ProductsView() {
             const market = supermarkets.find((s) => s.id === latest?.supermarketId)?.name;
             return (
               <article className="product-row" key={product.id}>
-                <div className="product-main"><div className="product-icon">{product.photoBlob ? <ProductPhoto blob={product.photoBlob} alt={product.name} /> : <ShoppingBasket size={19} />}</div><div><strong>{product.name}</strong><span>{product.brand || 'Sin marca'} · {product.category}</span></div></div>
+                <div className="product-main">
+                  <div className="product-photo-actions">
+                    <label className="product-icon product-photo-edit" title={product.photoBlob ? 'Cambiar imagen' : 'Añadir imagen'}>
+                      {product.photoBlob ? <ProductPhoto blob={product.photoBlob} alt={product.name} /> : <><ShoppingBasket size={19} /><span><ImagePlus size={14} /></span></>}
+                      <input type="file" accept="image/*" capture="environment" aria-label={`${product.photoBlob ? 'Cambiar' : 'Añadir'} imagen de ${product.name}`} onChange={(e) => { const photo = e.target.files?.[0]; if (photo) void updatePhoto(product, photo); e.target.value = ''; }} />
+                    </label>
+                    {product.photoBlob && <button className="remove-photo" aria-label={`Quitar imagen de ${product.name}`} title="Quitar imagen" onClick={() => void updatePhoto(product)}><X size={11} /></button>}
+                  </div>
+                  <div><strong>{product.name}</strong><span>{product.brand || 'Sin marca'} · {product.category}</span></div>
+                </div>
                 <label className="inline-field">Equivalente a<input value={product.genericName} onChange={(e) => updateGenericName(product, e.target.value)} /></label>
                 <div className="rating" aria-label={`Valoración ${product.rating} de 5`}>{[1,2,3,4,5].map((n) => <button key={n} aria-label={`${n} estrellas`} onClick={() => setRating(product, n)} className={n <= product.rating ? 'star active' : 'star'}><Star size={19} fill={n <= product.rating ? 'currentColor' : 'none'} /></button>)}</div>
                 <div className="latest-price"><span>{market ? `Último: ${market}` : 'Sin compras'}</span><strong>{latest ? formatUnitPrice(latest.normalizedUnitPrice, latest.normalizedUnit) : '—'}</strong></div>
@@ -597,9 +639,12 @@ function ProductPhoto({ blob, alt }: { blob: Blob; alt: string }) {
 }
 
 function CompareView() {
-  const products = useLiveQuery(() => db.products.toArray(), []) ?? [];
-  const purchases = useLiveQuery(() => db.purchases.toArray(), []) ?? [];
-  const supermarkets = useLiveQuery(() => db.supermarkets.toArray(), []) ?? [];
+  const productRecords = useLiveQuery(() => db.products.toArray(), []);
+  const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
+  const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
+  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
+  const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const genericNames = Array.from(new Set(products.map((p) => p.genericName).filter(Boolean))).sort();
   const [selected, setSelected] = useState('');
   useEffect(() => { if (!selected && genericNames[0]) setSelected(genericNames[0]); }, [selected, genericNames]);
@@ -625,18 +670,22 @@ function CompareView() {
       {!selected ? <div className="panel"><Empty text="Necesitas productos con un nombre genérico para compararlos." /></div> : (candidates.length === 0 || !cheapest || !favorite) ? <div className="panel"><Empty text="No hay compras suficientes para este producto." /></div> : (
         <>
           <div className="content-grid two">
-            <div className="recommendation best"><span>💰 MÁS BARATO</span><h3>{cheapest.product?.name}</h3><p>{cheapest.supermarket?.name} · {formatUnitPrice(cheapest.normalizedUnitPrice, cheapest.normalizedUnit)}</p></div>
-            <div className="recommendation favorite"><span>⭐ MEJOR SEGÚN TU VALORACIÓN</span><h3>{favorite.product?.name}</h3><p>{favorite.supermarket?.name} · {favorite.product?.rating || 0}/5 · {formatUnitPrice(favorite.normalizedUnitPrice, favorite.normalizedUnit)}</p></div>
+            <div className="recommendation best"><div className="recommendation-product">{cheapest.product && <ProductThumbnail product={cheapest.product} />}<div><span>💰 MÁS BARATO</span><h3>{cheapest.product?.name}</h3><p>{cheapest.supermarket?.name} · {formatUnitPrice(cheapest.normalizedUnitPrice, cheapest.normalizedUnit)}</p></div></div></div>
+            <div className="recommendation favorite"><div className="recommendation-product">{favorite.product && <ProductThumbnail product={favorite.product} />}<div><span>⭐ MEJOR SEGÚN TU VALORACIÓN</span><h3>{favorite.product?.name}</h3><p>{favorite.supermarket?.name} · {favorite.product?.rating || 0}/5 · {formatUnitPrice(favorite.normalizedUnitPrice, favorite.normalizedUnit)}</p></div></div></div>
           </div>
           <div className="panel table-panel">
             <table className="data-table"><thead><tr><th>Producto</th><th>Supermercado</th><th>Formato</th><th>Precio envase</th><th>Precio comparable</th><th>Tu nota</th><th>Fecha</th></tr></thead><tbody>
-              {candidates.map((c) => <tr key={`${c.productId}-${c.supermarketId}-${c.id}`}><td><strong>{c.product?.name}</strong><span>{c.product?.brand || 'Sin marca'}</span></td><td>{c.supermarket?.name}</td><td>{c.packageAmount} {c.packageUnit} × {c.quantityPurchased}</td><td>{money(c.price - c.discount)}</td><td className="strong-cell">{formatUnitPrice(c.normalizedUnitPrice, c.normalizedUnit)}</td><td>{'★'.repeat(c.product?.rating || 0)}{'☆'.repeat(5-(c.product?.rating || 0))}</td><td>{new Date(`${c.date}T00:00:00`).toLocaleDateString('es-ES')}</td></tr>)}
+              {candidates.map((c) => <tr key={`${c.productId}-${c.supermarketId}-${c.id}`}><td><div className="table-product">{c.product && <ProductThumbnail product={c.product} />}<div><strong>{c.product?.name}</strong><span>{c.product?.brand || 'Sin marca'}</span></div></div></td><td>{c.supermarket?.name}</td><td>{c.packageAmount} {c.packageUnit} × {c.quantityPurchased}</td><td>{money(c.price - c.discount)}</td><td className="strong-cell">{formatUnitPrice(c.normalizedUnitPrice, c.normalizedUnit)}</td><td>{'★'.repeat(c.product?.rating || 0)}{'☆'.repeat(5-(c.product?.rating || 0))}</td><td>{new Date(`${c.date}T00:00:00`).toLocaleDateString('es-ES')}</td></tr>)}
             </tbody></table>
           </div>
         </>
       )}
     </section>
   );
+}
+
+function ProductThumbnail({ product }: { product: Product }) {
+  return <div className="product-thumbnail">{product.photoBlob ? <ProductPhoto blob={product.photoBlob} alt={product.name} /> : <ShoppingBasket size={17} />}</div>;
 }
 
 function HistoryView() {
@@ -666,9 +715,103 @@ function HistoryView() {
             <Metric icon={Store} label="Supermercados" value={String(markets.length)} />
           </div>
           <div className="panel chart-panel"><div className="chart-height"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" /><YAxis /><Tooltip formatter={(value) => money(Number(value))} /><Legend />{markets.map((m, i) => <Line key={m} type="monotone" dataKey={m} connectNulls strokeWidth={2.5} dot={{ r: 4 }} stroke={['#2d6a4f','#d97706','#2563eb','#7c3aed','#dc2626','#0891b2'][i % 6] ?? '#2d6a4f'} />)}</LineChart></ResponsiveContainer></div></div>
-          <div className="panel table-panel"><table className="data-table"><thead><tr><th>Fecha</th><th>Producto</th><th>Supermercado</th><th>Formato</th><th>Precio</th><th>Comparable</th></tr></thead><tbody>{[...relevant].reverse().map((p) => <tr key={p.id}><td>{new Date(`${p.date}T00:00:00`).toLocaleDateString('es-ES')}</td><td>{p.product?.name}</td><td>{p.supermarket?.name}</td><td>{p.packageAmount} {p.packageUnit}</td><td>{money(p.price-p.discount)}</td><td className="strong-cell">{formatUnitPrice(p.normalizedUnitPrice,p.normalizedUnit)}</td></tr>)}</tbody></table></div>
+          <div className="panel table-panel"><table className="data-table"><thead><tr><th>Fecha</th><th>Producto</th><th>Supermercado</th><th>Formato</th><th>Precio</th><th>Comparable</th></tr></thead><tbody>{[...relevant].reverse().map((p) => <tr key={p.id}><td>{new Date(`${p.date}T00:00:00`).toLocaleDateString('es-ES')}</td><td><div className="table-product">{p.product && <ProductThumbnail product={p.product} />}<strong>{p.product?.name}</strong></div></td><td>{p.supermarket?.name}</td><td>{p.packageAmount} {p.packageUnit}</td><td>{money(p.price-p.discount)}</td><td className="strong-cell">{formatUnitPrice(p.normalizedUnitPrice,p.normalizedUnit)}</td></tr>)}</tbody></table></div>
         </>
       )}
+    </section>
+  );
+}
+
+function MedinaView() {
+  const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
+  const ticketRecords = useLiveQuery(() => db.tickets.toArray(), []);
+  const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
+  const productRecords = useLiveQuery(() => db.products.toArray(), []);
+  const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
+  const tickets = useMemo(() => ticketRecords ?? [], [ticketRecords]);
+  const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
+  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const medinaStores = useMemo(() => supermarkets.filter((store) => store.locality === 'Medina de Pomar'), [supermarkets]);
+  const medinaIds = useMemo(() => new Set(medinaStores.flatMap((store) => store.id ? [store.id] : [])), [medinaStores]);
+  const medinaTickets = useMemo(() => tickets.filter((ticket) => medinaIds.has(ticket.supermarketId)), [tickets, medinaIds]);
+  const medinaPurchases = useMemo(() => purchases.filter((purchase) => medinaIds.has(purchase.supermarketId)), [purchases, medinaIds]);
+  const medinaSpend = medinaTickets.reduce((sum, ticket) => sum + ticket.total, 0);
+
+  const comparisons = useMemo(() => {
+    const productById = new Map(products.flatMap((product) => product.id ? [[product.id, product] as const] : []));
+    const rows: Array<{ genericName: string; medina: EnrichedPurchase; outside: EnrichedPurchase; difference: number }> = [];
+    const genericNames = Array.from(new Set(medinaPurchases.map((purchase) => productById.get(purchase.productId)?.genericName).filter(Boolean))) as string[];
+    for (const genericName of genericNames) {
+      const ids = new Set(products.filter((product) => product.genericName === genericName).flatMap((product) => product.id ? [product.id] : []));
+      const local = medinaPurchases.filter((purchase) => ids.has(purchase.productId)).sort((a, b) => b.date.localeCompare(a.date))[0];
+      const outside = purchases.filter((purchase) => ids.has(purchase.productId) && !medinaIds.has(purchase.supermarketId) && purchase.normalizedUnit === local?.normalizedUnit).sort((a, b) => b.date.localeCompare(a.date))[0];
+      if (!local || !outside || outside.normalizedUnitPrice <= 0) continue;
+      rows.push({
+        genericName,
+        medina: { ...local, product: productById.get(local.productId), supermarket: supermarkets.find((store) => store.id === local.supermarketId) },
+        outside: { ...outside, product: productById.get(outside.productId), supermarket: supermarkets.find((store) => store.id === outside.supermarketId) },
+        difference: (local.normalizedUnitPrice / outside.normalizedUnitPrice - 1) * 100,
+      });
+    }
+    return rows.sort((a, b) => b.difference - a.difference);
+  }, [medinaPurchases, medinaIds, products, purchases, supermarkets]);
+
+  const averageDifference = comparisons.length ? comparisons.reduce((sum, row) => sum + row.difference, 0) / comparisons.length : null;
+
+  return (
+    <section className="page">
+      <div className="medina-hero">
+        <div><span className="eyebrow">OBSERVATORIO DE VERANO</span><h2>Supermercados de Medina de Pomar</h2><p>Registra los tickets con la ubicación de Medina y comprobaremos con tus propios datos si el veraneo encarece la cesta.</p></div>
+        <div className="medina-pin"><MapPin size={28} /><span>Las Merindades</span><strong>09500</strong></div>
+      </div>
+
+      <div className="metrics-grid medina-metrics">
+        <Metric icon={Store} label="Supermercados localizados" value={String(MEDINA_SUPERMARKETS.length)} />
+        <Metric icon={ReceiptText} label="Tickets de Medina" value={String(medinaTickets.length)} />
+        <Metric icon={ShoppingBasket} label="Gasto registrado" value={money(medinaSpend)} />
+        <Metric icon={Scale} label="Diferencia media" value={averageDifference === null ? 'Sin datos' : pct(averageDifference)} />
+      </div>
+
+      <div className="medina-note">
+        <AlertTriangle size={19} />
+        <div><strong>La subida no se presupone: se mide.</strong><span>La diferencia compara el último precio normalizado de cada producto en Medina con el último registrado fuera de Medina. Necesitamos compras del mismo producto en ambos lugares.</span></div>
+      </div>
+
+      <div className="medina-store-grid">
+        {MEDINA_SUPERMARKETS.map((directoryStore, index) => {
+          const store = medinaStores.find((candidate) => candidate.name === directoryStore.name);
+          const storeTickets = store?.id ? medinaTickets.filter((ticket) => ticket.supermarketId === store.id) : [];
+          const spend = storeTickets.reduce((sum, ticket) => sum + ticket.total, 0);
+          const latest = [...storeTickets].sort((a, b) => b.date.localeCompare(a.date))[0];
+          const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${directoryStore.name}, ${directoryStore.address}, Medina de Pomar`)}`;
+          return (
+            <article className="medina-store-card" key={directoryStore.name}>
+              <div className={`store-brand store-brand-${index + 1}`}>{directoryStore.name.slice(0, 2).toUpperCase()}</div>
+              <div className="medina-store-copy"><h3>{directoryStore.name}</h3><p><MapPin size={14} /> {directoryStore.address}</p></div>
+              <div className="medina-store-stats">
+                <div><span>Tickets</span><strong>{storeTickets.length}</strong></div>
+                <div><span>Gasto</span><strong>{money(spend)}</strong></div>
+                <div><span>Última compra</span><strong>{latest ? new Date(`${latest.date}T00:00:00`).toLocaleDateString('es-ES') : '—'}</strong></div>
+              </div>
+              <div className="medina-store-links">
+                <a href={mapUrl} target="_blank" rel="noreferrer"><MapPin size={15} /> Ver mapa</a>
+                <a href={directoryStore.website} target="_blank" rel="noreferrer">Web oficial <ExternalLink size={14} /></a>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      <div className="panel medina-comparison">
+        <div className="panel-title"><div><h3>Termómetro de precios de Medina</h3><p>Productos comparables ordenados por mayor diferencia frente a tus compras fuera de Medina.</p></div><Scale size={20} /></div>
+        {comparisons.length === 0 ? <Empty text="Aún faltan productos comprados tanto en Medina como fuera para calcular la diferencia." /> : (
+          <div className="table-panel">
+            <table className="data-table medina-table"><thead><tr><th>Producto</th><th>Medina de Pomar</th><th>Fuera de Medina</th><th>Diferencia</th></tr></thead><tbody>
+              {comparisons.map((row) => <tr key={row.genericName}><td><strong>{row.genericName}</strong></td><td><strong>{formatUnitPrice(row.medina.normalizedUnitPrice, row.medina.normalizedUnit)}</strong><span>{row.medina.supermarket?.name}</span></td><td><strong>{formatUnitPrice(row.outside.normalizedUnitPrice, row.outside.normalizedUnit)}</strong><span>{row.outside.supermarket?.name}</span></td><td><span className={row.difference > 0 ? 'price-difference up' : 'price-difference down'}>{pct(row.difference)}</span></td></tr>)}
+            </tbody></table>
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -688,10 +831,11 @@ function SettingsView() {
 
   async function importData(file: File) {
     try {
-      const data = JSON.parse(await file.text());
-      if (data.version !== 1 || !Array.isArray(data.tickets) || !Array.isArray(data.products)) throw new Error('Formato no válido');
-      const restoredTickets = await Promise.all(data.tickets.map(async (t: any) => ({ ...t, fileBlob: typeof t.fileBlob === 'string' ? dataUrlToBlob(t.fileBlob) : undefined })));
-      const restoredProducts = await Promise.all(data.products.map(async (p: any) => ({ ...p, photoBlob: typeof p.photoBlob === 'string' ? dataUrlToBlob(p.photoBlob) : undefined })));
+      const parsed: unknown = JSON.parse(await file.text());
+      if (!isRecord(parsed) || parsed['version'] !== 1 || !Array.isArray(parsed['supermarkets']) || !Array.isArray(parsed['tickets']) || !Array.isArray(parsed['products']) || !Array.isArray(parsed['purchases'])) throw new Error('Formato no válido');
+      const data = parsed as BackupPayload;
+      const restoredTickets = data.tickets.map((ticket): Ticket => { const { fileBlob, ...rest } = ticket; return typeof fileBlob === 'string' ? { ...rest, fileBlob: dataUrlToBlob(fileBlob) } : rest; });
+      const restoredProducts = data.products.map((product): Product => { const { photoBlob, ...rest } = product; return typeof photoBlob === 'string' ? { ...rest, photoBlob: dataUrlToBlob(photoBlob) } : rest; });
       await db.transaction('rw', db.supermarkets, db.tickets, db.products, db.purchases, async () => {
         await Promise.all([db.supermarkets.clear(), db.tickets.clear(), db.products.clear(), db.purchases.clear()]);
         await db.supermarkets.bulkAdd(data.supermarkets); await db.products.bulkAdd(restoredProducts); await db.tickets.bulkAdd(restoredTickets); await db.purchases.bulkAdd(data.purchases);
@@ -743,5 +887,35 @@ function detectAlerts(purchases: EnrichedPurchase[]) {
 
 function blobToDataUrl(blob: Blob): Promise<string> { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(blob); }); }
 function dataUrlToBlob(dataUrl: string) { const [meta = '', b64 = ''] = dataUrl.split(','); const mime = meta.match(/data:(.*?);base64/)?.[1] ?? 'application/octet-stream'; const binary = atob(b64); const bytes = new Uint8Array(binary.length); for (let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i); return new Blob([bytes], { type: mime }); }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
+
+function formatDraftUnitPrice(line: Pick<TicketLineDraft, 'price' | 'discount' | 'quantityPurchased' | 'packageAmount' | 'packageUnit'>) {
+  if (line.price <= 0 || line.quantityPurchased <= 0 || line.packageAmount <= 0) return '—';
+  const normalized = normalizeUnitPrice(line.price, line.discount, line.quantityPurchased, line.packageAmount, line.packageUnit);
+  return formatUnitPrice(normalized.value, normalized.unit);
+}
+
+async function optimizeProductPhoto(photo: File): Promise<Pick<Product, 'photoName' | 'photoType' | 'photoBlob'>> {
+  const bitmap = await createImageBitmap(photo);
+  try {
+    const maxSide = 512;
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas no disponible');
+    context.drawImage(bitmap, 0, 0, width, height);
+    const photoBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('No se pudo convertir la imagen')), 'image/webp', 0.82);
+    });
+    const baseName = photo.name.replace(/\.[^.]+$/, '') || 'producto';
+    return { photoName: `${baseName}.webp`, photoType: photoBlob.type, photoBlob };
+  } finally {
+    bitmap.close();
+  }
+}
 
 export default App;
