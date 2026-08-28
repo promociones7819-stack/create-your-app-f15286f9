@@ -90,6 +90,21 @@ type BackupPayload = {
   shoppingList?: ShoppingListItem[];
 };
 
+const PRODUCT_CATEGORIES = [
+  "Frutas y verduras",
+  "Carnes y pescados",
+  "Charcutería y embutidos",
+  "Lácteos y huevos",
+  "Panadería",
+  "Despensa",
+  "Congelados",
+  "Bebidas",
+  "Dulces y postres",
+  "Limpieza",
+  "Higiene y cuidado personal",
+  "Otros",
+] as const;
+
 const emptyLine = (): TicketLineDraft => ({
   id: uid(),
   productName: "",
@@ -1115,6 +1130,9 @@ function ProductsView() {
   async function updateGenericName(product: Product, value: string) {
     if (product.id) await db.products.update(product.id, { genericName: value });
   }
+  async function updateCategory(product: Product, category: string) {
+    if (product.id) await db.products.update(product.id, { category });
+  }
   async function updatePhoto(product: Product, photo?: File) {
     if (!product.id) return;
     if (!photo) {
@@ -1222,6 +1240,22 @@ function ProductsView() {
                     onChange={(e) => updateGenericName(product, e.target.value)}
                   />
                 </label>
+                <label className="inline-field">
+                  Categoría
+                  <select
+                    value={product.category}
+                    onChange={(e) => void updateCategory(product, e.target.value)}
+                  >
+                    {!PRODUCT_CATEGORIES.includes(
+                      product.category as (typeof PRODUCT_CATEGORIES)[number],
+                    ) && <option value={product.category}>{product.category}</option>}
+                    {PRODUCT_CATEGORIES.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <div className="rating" aria-label={`Valoración ${product.rating} de 5`}>
                   {[1, 2, 3, 4, 5].map((n) => (
                     <button
@@ -1250,6 +1284,11 @@ function ProductsView() {
           })}
         </div>
       )}
+      <StoreProductDirectory
+        products={products}
+        purchases={purchases}
+        supermarkets={supermarkets}
+      />
     </section>
   );
 }
@@ -1258,6 +1297,77 @@ function ProductPhoto({ blob, alt }: { blob: Blob; alt: string }) {
   const url = useMemo(() => URL.createObjectURL(blob), [blob]);
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   return <img className="product-photo" src={url} alt={alt} />;
+}
+
+function StoreProductDirectory({
+  products,
+  purchases,
+  supermarkets,
+}: {
+  products: Product[];
+  purchases: Purchase[];
+  supermarkets: Supermarket[];
+}) {
+  const stores = supermarkets
+    .map((supermarket) => {
+      const latestByProduct = new Map<number, Purchase>();
+      purchases
+        .filter((purchase) => purchase.supermarketId === supermarket.id)
+        .sort((a, b) => b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0))
+        .forEach((purchase) => {
+          if (!latestByProduct.has(purchase.productId))
+            latestByProduct.set(purchase.productId, purchase);
+        });
+      const rows = [...latestByProduct.values()].flatMap((purchase) => {
+        const product = products.find((candidate) => candidate.id === purchase.productId);
+        return product ? [{ product, purchase }] : [];
+      });
+      return { supermarket, rows };
+    })
+    .filter((store) => store.rows.length > 0)
+    .sort((a, b) => b.rows.length - a.rows.length);
+
+  if (!stores.length) return null;
+  return (
+    <div className="store-directory">
+      <div className="page-heading compact-heading">
+        <div>
+          <span className="eyebrow">POR SUPERMERCADO</span>
+          <h2>Productos comprados en cada tienda</h2>
+          <p>Se muestra el último precio conocido de cada producto.</p>
+        </div>
+      </div>
+      <div className="store-product-grid">
+        {stores.map(({ supermarket, rows }) => (
+          <article className="panel store-product-card" key={supermarket.id}>
+            <div className="panel-title">
+              <div>
+                <h3>{supermarket.name}</h3>
+                <p>{supermarket.locality || `${rows.length} productos distintos`}</p>
+              </div>
+              <Store size={20} />
+            </div>
+            <div className="store-product-list">
+              {rows
+                .sort((a, b) => a.product.name.localeCompare(b.product.name, "es"))
+                .map(({ product, purchase }) => (
+                  <div className="store-product-row" key={product.id}>
+                    <ProductThumbnail product={product} />
+                    <div>
+                      <strong>{product.name}</strong>
+                      <span>{product.category || "Otros"}</span>
+                    </div>
+                    <strong>
+                      {formatUnitPrice(purchase.normalizedUnitPrice, purchase.normalizedUnit)}
+                    </strong>
+                  </div>
+                ))}
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ShoppingListView() {
@@ -1512,6 +1622,50 @@ function packagePrice(purchase: Purchase) {
   return Math.max(0, purchase.price - purchase.discount) / Math.max(1, purchase.quantityPurchased);
 }
 
+function ProductMultiSelect({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[];
+  selected: string[];
+  onChange: (selected: string[]) => void;
+}) {
+  function toggle(option: string) {
+    onChange(
+      selected.includes(option)
+        ? selected.filter((candidate) => candidate !== option)
+        : [...selected, option],
+    );
+  }
+
+  return (
+    <div className="multi-select" aria-label="Seleccionar productos">
+      <div className="multi-select-head">
+        <span>Productos</span>
+        <button className="ghost" type="button" onClick={() => onChange(options)}>
+          Todos
+        </button>
+        <button className="ghost" type="button" onClick={() => onChange([])}>
+          Limpiar
+        </button>
+      </div>
+      <div className="multi-select-options">
+        {options.map((option) => (
+          <label key={option} className={selected.includes(option) ? "selected" : ""}>
+            <input
+              type="checkbox"
+              checked={selected.includes(option)}
+              onChange={() => toggle(option)}
+            />
+            {option}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CompareView() {
   const productRecords = useLiveQuery(() => db.products.toArray(), []);
   const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
@@ -1519,17 +1673,22 @@ function CompareView() {
   const products = useMemo(() => productRecords ?? [], [productRecords]);
   const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
-  const genericNames = Array.from(
-    new Set(products.map((p) => p.genericName).filter(Boolean)),
-  ).sort();
-  const [selected, setSelected] = useState("");
+  const genericNames = useMemo(
+    () => Array.from(new Set(products.map((p) => p.genericName).filter(Boolean))).sort(),
+    [products],
+  );
+  const [selected, setSelected] = useState<string[]>([]);
+  const [selectionReady, setSelectionReady] = useState(false);
   useEffect(() => {
-    if (!selected && genericNames[0]) setSelected(genericNames[0]);
-  }, [selected, genericNames]);
+    if (!selectionReady && genericNames[0]) {
+      setSelected([genericNames[0]]);
+      setSelectionReady(true);
+    }
+  }, [selectionReady, genericNames]);
 
   const candidates = useMemo(() => {
-    if (!selected) return [];
-    const targetProducts = products.filter((p) => p.genericName === selected);
+    if (!selected.length) return [];
+    const targetProducts = products.filter((p) => selected.includes(p.genericName));
     const rows: EnrichedPurchase[] = [];
     for (const product of targetProducts) {
       const byStore = new Map<number, Purchase>();
@@ -1564,18 +1723,9 @@ function CompareView() {
           <h2>Mismo producto, distinta marca</h2>
           <p>Se compara el precio normalizado, no solo el precio del envase.</p>
         </div>
-        <label className="select-label">
-          Producto genérico
-          <select value={selected} onChange={(e) => setSelected(e.target.value)}>
-            {genericNames.map((g) => (
-              <option key={g} value={g}>
-                {g}
-              </option>
-            ))}
-          </select>
-        </label>
+        <ProductMultiSelect options={genericNames} selected={selected} onChange={setSelected} />
       </div>
-      {!selected ? (
+      {!selected.length ? (
         <div className="panel">
           <Empty text="Necesitas productos con un nombre genérico para compararlos." />
         </div>
@@ -1590,7 +1740,7 @@ function CompareView() {
               <div className="recommendation-product">
                 {cheapest.product && <ProductThumbnail product={cheapest.product} />}
                 <div>
-                  <span>💰 MÁS BARATO</span>
+                  <span>💰 PRECIO MÁS BAJO DE LA SELECCIÓN</span>
                   <h3>{cheapest.product?.name}</h3>
                   <p>
                     {cheapest.supermarket?.name} ·{" "}
@@ -1603,7 +1753,7 @@ function CompareView() {
               <div className="recommendation-product">
                 {favorite.product && <ProductThumbnail product={favorite.product} />}
                 <div>
-                  <span>⭐ MEJOR SEGÚN TU VALORACIÓN</span>
+                  <span>⭐ MEJOR VALORADO DE LA SELECCIÓN</span>
                   <h3>{favorite.product?.name}</h3>
                   <p>
                     {favorite.supermarket?.name} · {favorite.product?.rating || 0}/5 ·{" "}
@@ -1675,23 +1825,39 @@ function ProductThumbnail({ product }: { product: Product }) {
 }
 
 function HistoryView() {
-  const products = useLiveQuery(() => db.products.toArray(), []) ?? [];
-  const purchases = useLiveQuery(() => db.purchases.toArray(), []) ?? [];
-  const supermarkets = useLiveQuery(() => db.supermarkets.toArray(), []) ?? [];
-  const genericNames = Array.from(
-    new Set(products.map((p) => p.genericName).filter(Boolean)),
-  ).sort();
-  const [selected, setSelected] = useState("");
+  const productRecords = useLiveQuery(() => db.products.toArray(), []);
+  const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
+  const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
+  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
+  const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
+  const genericNames = useMemo(
+    () => Array.from(new Set(products.map((p) => p.genericName).filter(Boolean))).sort(),
+    [products],
+  );
+  const [selected, setSelected] = useState<string[]>([]);
+  const [selectionReady, setSelectionReady] = useState(false);
   useEffect(() => {
-    if (!selected && genericNames[0]) setSelected(genericNames[0]);
-  }, [selected, genericNames]);
+    if (!selectionReady && genericNames[0]) {
+      setSelected([genericNames[0]]);
+      setSelectionReady(true);
+    }
+  }, [selectionReady, genericNames]);
 
   const relevant = enrichPurchases(purchases, products, supermarkets)
-    .filter((p) => p.product?.genericName === selected)
+    .filter((p) => p.product?.genericName && selected.includes(p.product.genericName))
     .sort((a, b) => a.date.localeCompare(b.date));
   const markets = Array.from(
     new Set(relevant.map((p) => p.supermarket?.name).filter(Boolean)),
   ) as string[];
+  const series = Array.from(
+    new Set(
+      relevant.map(
+        (purchase) =>
+          `${purchase.product?.genericName ?? "Producto"} · ${purchase.supermarket?.name ?? "Otro"}`,
+      ),
+    ),
+  );
   const chartData = relevant.map((p, i) => ({
     index: i + 1,
     date: p.date,
@@ -1700,14 +1866,12 @@ function HistoryView() {
       month: "2-digit",
       year: "2-digit",
     }),
-    [p.supermarket?.name ?? "Otro"]: Number(p.normalizedUnitPrice.toFixed(2)),
+    [`${p.product?.genericName ?? "Producto"} · ${p.supermarket?.name ?? "Otro"}`]: Number(
+      p.normalizedUnitPrice.toFixed(2),
+    ),
   }));
-  const latest = relevant.length ? relevant[relevant.length - 1] : undefined;
-  const first = relevant[0];
-  const variation =
-    latest && first && first.normalizedUnitPrice
-      ? (latest.normalizedUnitPrice / first.normalizedUnitPrice - 1) * 100
-      : 0;
+  const categories = new Set(relevant.map((purchase) => purchase.product?.category).filter(Boolean))
+    .size;
 
   return (
     <section className="page">
@@ -1717,14 +1881,7 @@ function HistoryView() {
           <h2>Histórico de precios</h2>
           <p>Observa la evolución del precio comparable y los cambios de formato.</p>
         </div>
-        <label className="select-label">
-          Producto
-          <select value={selected} onChange={(e) => setSelected(e.target.value)}>
-            {genericNames.map((g) => (
-              <option key={g}>{g}</option>
-            ))}
-          </select>
-        </label>
+        <ProductMultiSelect options={genericNames} selected={selected} onChange={setSelected} />
       </div>
       {relevant.length === 0 ? (
         <div className="panel">
@@ -1734,15 +1891,9 @@ function HistoryView() {
         <>
           <div className="metrics-grid">
             <Metric icon={History} label="Registros" value={String(relevant.length)} />
-            <Metric
-              icon={Scale}
-              label="Último precio"
-              value={
-                latest ? formatUnitPrice(latest.normalizedUnitPrice, latest.normalizedUnit) : "—"
-              }
-            />
-            <Metric icon={ArrowUpRight} label="Variación total" value={pct(variation)} />
+            <Metric icon={ShoppingBasket} label="Productos" value={String(selected.length)} />
             <Metric icon={Store} label="Supermercados" value={String(markets.length)} />
+            <Metric icon={PackageSearch} label="Categorías" value={String(categories)} />
           </div>
           <div className="panel chart-panel">
             <div className="chart-height">
@@ -1753,11 +1904,11 @@ function HistoryView() {
                   <YAxis />
                   <Tooltip formatter={(value) => money(Number(value))} />
                   <Legend />
-                  {markets.map((m, i) => (
+                  {series.map((seriesName, i) => (
                     <Line
-                      key={m}
+                      key={seriesName}
                       type="monotone"
-                      dataKey={m}
+                      dataKey={seriesName}
                       connectNulls
                       strokeWidth={2.5}
                       dot={{ r: 4 }}
