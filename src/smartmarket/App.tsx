@@ -379,6 +379,9 @@ function TicketsView() {
   const products = useLiveQuery(() => db.products.toArray(), []) ?? [];
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showEditor, setShowEditor] = useState(false);
+  const ticketSpend = tickets.reduce((sum, ticket) => sum + ticket.total, 0);
+  const currentMonth = todayISO().slice(0, 7);
+  const monthTickets = tickets.filter((ticket) => ticket.date.startsWith(currentMonth));
 
   const openNew = () => {
     setEditingId(null);
@@ -415,6 +418,17 @@ function TicketsView() {
         <button className="primary" onClick={openNew}>
           <Plus size={18} /> Nuevo ticket
         </button>
+      </div>
+
+      <div className="metrics-grid ticket-metrics">
+        <Metric icon={ReceiptText} label="Tickets este mes" value={String(monthTickets.length)} />
+        <Metric icon={ShoppingBasket} label="Líneas guardadas" value={String(purchases.length)} />
+        <Metric
+          icon={Store}
+          label="Supermercados"
+          value={String(new Set(tickets.map((ticket) => ticket.supermarketId)).size)}
+        />
+        <Metric icon={BarChart3} label="Gasto registrado" value={money(ticketSpend)} />
       </div>
 
       {tickets.length === 0 ? (
@@ -1758,6 +1772,30 @@ function CompareView() {
       (b.product?.rating ?? 0) - (a.product?.rating ?? 0) ||
       a.normalizedUnitPrice - b.normalizedUnitPrice,
   )[0];
+  const storeComparisons = supermarkets
+    .flatMap((supermarket) => {
+      const rows = candidates.filter((candidate) => candidate.supermarketId === supermarket.id);
+      if (!rows.length) return [];
+      const bestByGeneric = new Map<string, EnrichedPurchase>();
+      for (const row of rows) {
+        const genericName = row.product?.genericName;
+        if (!genericName) continue;
+        const current = bestByGeneric.get(genericName);
+        if (!current || row.normalizedUnitPrice < current.normalizedUnitPrice)
+          bestByGeneric.set(genericName, row);
+      }
+      const chosen = [...bestByGeneric.values()];
+      return [
+        {
+          supermarket,
+          coverage: chosen.length,
+          total: chosen.reduce((sum, row) => sum + packagePrice(row), 0),
+          rows: chosen,
+        },
+      ];
+    })
+    .sort((a, b) => b.coverage - a.coverage || a.total - b.total);
+  const bestStoreComparison = storeComparisons[0];
 
   return (
     <section className="page">
@@ -1779,6 +1817,53 @@ function CompareView() {
         </div>
       ) : (
         <>
+          <div className="comparison-store-grid">
+            {storeComparisons.slice(0, 4).map((comparison) => (
+              <article
+                className={
+                  comparison === bestStoreComparison
+                    ? "panel comparison-store-card best-store"
+                    : "panel comparison-store-card"
+                }
+                key={comparison.supermarket.id}
+              >
+                {comparison === bestStoreComparison && (
+                  <span className="best-ribbon">★ MEJOR OPCIÓN</span>
+                )}
+                <div className="comparison-store-head">
+                  <div className="store-icon">
+                    <Store size={19} />
+                  </div>
+                  <div>
+                    <h3>{comparison.supermarket.name}</h3>
+                    <span>{comparison.supermarket.locality || "Tus precios guardados"}</span>
+                  </div>
+                </div>
+                <div className="comparison-store-total">
+                  <span>Cesta estimada</span>
+                  <strong>{money(comparison.total)}</strong>
+                  <small>
+                    Cobertura {comparison.coverage}/{selected.length}
+                  </small>
+                </div>
+                <div className="comparison-price-bars">
+                  {comparison.rows.slice(0, 6).map((row) => (
+                    <div key={`${comparison.supermarket.id}-${row.product?.genericName}`}>
+                      <span>{row.product?.genericName}</span>
+                      <i
+                        style={{
+                          width: `${Math.min(100, Math.max(24, row.normalizedUnitPrice * 12))}%`,
+                        }}
+                      />
+                      <strong>
+                        {formatUnitPrice(row.normalizedUnitPrice, row.normalizedUnit)}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
           <div className="content-grid two">
             <div className="recommendation best">
               <div className="recommendation-product">

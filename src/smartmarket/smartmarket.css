@@ -1318,13 +1318,14 @@ button {
   --view-accent: #5b8f63;
   --view-accent-soft: rgba(214, 243, 108, 0.3);
   --view-tint: rgba(232, 242, 221, 0.74);
+  --view-background: url("/smartmarket-dashboard-bg.png");
   position: relative;
   isolation: isolate;
   min-height: 100vh;
   overflow: hidden;
   background:
     linear-gradient(112deg, var(--view-tint), rgba(255, 250, 240, 0.72)),
-    url("/smartmarket-welcome.jpg") center / cover fixed;
+    var(--view-background) center / cover fixed;
 }
 .main-content::before {
   position: absolute;
@@ -1354,6 +1355,7 @@ button {
   --view-accent: #ba7b37;
   --view-accent-soft: rgba(239, 177, 92, 0.34);
   --view-tint: rgba(249, 237, 215, 0.78);
+  --view-background: url("/smartmarket-receipts-bg.png");
   background-position: 58% center;
 }
 .view-tickets::after {
@@ -1363,6 +1365,7 @@ button {
   --view-accent: #7a5b9f;
   --view-accent-soft: rgba(170, 132, 204, 0.28);
   --view-tint: rgba(242, 232, 243, 0.76);
+  --view-background: url("/smartmarket-dashboard-bg.png");
   background-position: 32% center;
 }
 .view-products::after {
@@ -1372,6 +1375,7 @@ button {
   --view-accent: #287f76;
   --view-accent-soft: rgba(78, 182, 166, 0.3);
   --view-tint: rgba(225, 241, 235, 0.77);
+  --view-background: url("/smartmarket-market-bg.png");
   background-position: 72% center;
 }
 .view-supermarkets::after {
@@ -1381,6 +1385,7 @@ button {
   --view-accent: #708c24;
   --view-accent-soft: rgba(198, 226, 83, 0.36);
   --view-tint: rgba(239, 245, 213, 0.77);
+  --view-background: url("/smartmarket-dashboard-bg.png");
   background-position: 45% center;
 }
 .view-shopping-list::after {
@@ -1390,6 +1395,7 @@ button {
   --view-accent: #6d4e9c;
   --view-accent-soft: rgba(140, 96, 193, 0.3);
   --view-tint: rgba(238, 230, 244, 0.77);
+  --view-background: url("/smartmarket-market-bg.png");
   background-position: 62% center;
 }
 .view-compare::after {
@@ -1399,6 +1405,7 @@ button {
   --view-accent: #347098;
   --view-accent-soft: rgba(82, 157, 204, 0.3);
   --view-tint: rgba(226, 238, 243, 0.78);
+  --view-background: url("/smartmarket-market-bg.png");
   background-position: 25% center;
 }
 .view-history::after {
@@ -1408,6 +1415,7 @@ button {
   --view-accent: #b36a3d;
   --view-accent-soft: rgba(231, 153, 97, 0.34);
   --view-tint: rgba(246, 231, 210, 0.77);
+  --view-background: url("/smartmarket-market-bg.png");
   background-position: 80% center;
 }
 .view-medina::after {
@@ -1417,6 +1425,7 @@ button {
   --view-accent: #547857;
   --view-accent-soft: rgba(133, 172, 112, 0.3);
   --view-tint: rgba(236, 235, 218, 0.76);
+  --view-background: url("/smartmarket-receipts-bg.png");
   background-position: center;
 }
 .view-settings::after {
@@ -1529,6 +1538,96 @@ button {
   border-color: rgba(226, 169, 63, 0.5);
   background: rgba(255, 244, 208, 0.76);
 }
+.comparison-store-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.comparison-store-card {
+  position: relative;
+  min-width: 0;
+  padding: 18px;
+}
+.comparison-store-card.best-store {
+  border: 2px solid rgba(111, 76, 154, 0.58);
+  box-shadow: 0 20px 48px rgba(96, 64, 139, 0.18);
+}
+.best-ribbon {
+  position: absolute;
+  top: -13px;
+  left: 16px;
+  right: 16px;
+  border-radius: 8px 8px 0 0;
+  padding: 6px;
+  background: #d6f36c;
+  color: #24321d;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-align: center;
+}
+.comparison-store-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.comparison-store-head h3 {
+  margin: 0;
+  font-size: 17px;
+}
+.comparison-store-head span {
+  color: #718078;
+  font-size: 10px;
+}
+.comparison-store-total {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 10px;
+  align-items: end;
+  margin: 16px 0 12px;
+}
+.comparison-store-total span,
+.comparison-store-total small {
+  color: #6c7972;
+  font-size: 10px;
+}
+.comparison-store-total strong {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  color: var(--view-accent);
+  font-size: 25px;
+}
+.comparison-price-bars {
+  display: grid;
+  gap: 8px;
+}
+.comparison-price-bars > div {
+  display: grid;
+  grid-template-columns: minmax(70px, 0.8fr) minmax(55px, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  font-size: 9px;
+}
+.comparison-price-bars span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comparison-price-bars i {
+  display: block;
+  height: 5px;
+  max-width: 100%;
+  border-radius: 99px;
+  background: var(--view-accent);
+  opacity: 0.66;
+}
+.comparison-price-bars strong {
+  font-size: 9px;
+}
+.ticket-metrics {
+  margin-bottom: 18px;
+}
 .view-history .chart-panel {
   border-top: 4px solid var(--view-accent);
 }
@@ -1582,6 +1681,9 @@ button {
   }
   .view-tickets .ticket-card:nth-child(3n + 2) {
     transform: none;
+  }
+  .comparison-store-grid {
+    grid-template-columns: 1fr;
   }
 }
 
