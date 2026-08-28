@@ -190,7 +190,7 @@ function App() {
   return (
     <div className="app-shell">
       <Sidebar view={view} setView={setView} />
-      <main className="main-content">
+      <main className={`main-content view-${view}`}>
         <Topbar />
         {view === "dashboard" && <Dashboard onGo={setView} />}
         {view === "tickets" && <TicketsView />}

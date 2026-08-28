@@ -27,7 +27,35 @@ export const Route = createFileRoute("/")({
 function Index() {
   // La app es local-first (IndexedDB/Dexie): solo puede montarse en el navegador.
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const [showWelcome, setShowWelcome] = useState(true);
+  useEffect(() => {
+    setMounted(true);
+    const timer = window.setTimeout(() => setShowWelcome(false), 4_500);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  if (showWelcome)
+    return (
+      <section className="welcome-screen" aria-label="Bienvenida a SuperComparador">
+        <img
+          className="welcome-image"
+          src="/smartmarket-welcome.jpg"
+          alt="SuperComparador, comparación de precios entre supermercados"
+        />
+        <div className="welcome-overlay" />
+        <div className="welcome-content">
+          <span>SMARTMARKET LOCAL</span>
+          <h1>Compara tu cesta. Compra mejor.</h1>
+          <p>Tus precios, tus supermercados y todo tu histórico en un solo lugar.</p>
+          <button type="button" onClick={() => setShowWelcome(false)}>
+            Entrar al comparador
+          </button>
+          <div className="welcome-progress" aria-hidden="true">
+            <i />
+          </div>
+        </div>
+      </section>
+    );
 
   if (!mounted) return <div className="boot">Preparando la base de datos local…</div>;
 
