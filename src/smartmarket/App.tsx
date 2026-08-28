@@ -9,6 +9,7 @@ import {
   FileDown,
   FileUp,
   FolderOpen,
+  Globe2,
   History,
   Home,
   ImagePlus,
@@ -90,6 +91,28 @@ type BackupPayload = {
   products: ImportedProduct[];
   purchases: Purchase[];
   shoppingList?: ShoppingListItem[];
+};
+
+type PublicOffer = {
+  name: string;
+  supermarket: string;
+  price: number;
+  url: string;
+  location: string;
+  onlinePrice: true;
+};
+type PublicOffersResponse = {
+  query: string;
+  checkedAt: string;
+  location: string;
+  searchArea: {
+    center: string;
+    radiusKm: number;
+    municipalities: string[];
+  };
+  offers: PublicOffer[];
+  warnings: string[];
+  sources: { supermarket: string; label: string; url: string }[];
 };
 
 const PRODUCT_CATEGORIES = [
@@ -1428,6 +1451,110 @@ function StoreProductDirectory({
   );
 }
 
+function PublicOffersPanel({ query }: { query: string }) {
+  const [result, setResult] = useState<PublicOffersResponse>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (query.trim().length < 2) {
+      setResult(undefined);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const response = await fetch(`/api/offers?q=${encodeURIComponent(query)}`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("No se han podido consultar las ofertas.");
+        setResult((await response.json()) as PublicOffersResponse);
+      } catch (fetchError) {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setResult(undefined);
+        setError(fetchError instanceof Error ? fetchError.message : "Consulta no disponible.");
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 450);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
+
+  if (!query) return null;
+  const lowestPrice = result?.offers[0]?.price;
+
+  return (
+    <section className="panel public-offers" aria-live="polite">
+      <div className="panel-title public-offers-head">
+        <div>
+          <span className="eyebrow">PRECIOS EN LA RED</span>
+          <h3>Ofertas públicas a 25 km de Getxo</h3>
+          <p>
+            Buscando “{query}” en catálogos públicos. El precio online puede variar en tienda.
+          </p>
+        </div>
+        <Globe2 size={22} />
+      </div>
+
+      {loading ? (
+        <div className="public-offers-status">Consultando precios públicos…</div>
+      ) : error ? (
+        <div className="public-offers-status error">{error}</div>
+      ) : result ? (
+        <>
+          {result.offers.length ? (
+            <div className="public-offer-grid">
+              {result.offers.slice(0, 6).map((offer) => (
+                <a
+                  className={offer.price === lowestPrice ? "public-offer cheapest" : "public-offer"}
+                  href={offer.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  key={`${offer.supermarket}-${offer.name}`}
+                >
+                  <div>
+                    <span>{offer.supermarket}</span>
+                    {offer.price === lowestPrice && <small>MEJOR PRECIO ENCONTRADO</small>}
+                  </div>
+                  <strong>{money(offer.price)}</strong>
+                  <h4>{offer.name}</h4>
+                  <p>{offer.location}</p>
+                  <em>
+                    Ver fuente <ExternalLink size={13} />
+                  </em>
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="public-offers-status">
+              No se han encontrado precios públicos para este nombre. Prueba con uno más genérico.
+            </div>
+          )}
+          <div className="public-source-links">
+            <span>
+              Consultado {new Date(result.checkedAt).toLocaleString("es-ES", { timeStyle: "short", dateStyle: "short" })}
+            </span>
+            {result.sources.map((source) => (
+              <a href={source.url} target="_blank" rel="noopener noreferrer" key={source.supermarket}>
+                {source.supermarket}: {source.label} <ExternalLink size={12} />
+              </a>
+            ))}
+          </div>
+          <p className="public-search-area">
+            <MapPin size={13} /> Radio de {result.searchArea.radiusKm} km desde {result.searchArea.center}:
+            {" "}{result.searchArea.municipalities.join(", ")} y municipios próximos.
+          </p>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function ShoppingListView() {
   const itemRecords = useLiveQuery(() => db.shoppingList.orderBy("createdAt").toArray(), []);
   const productRecords = useLiveQuery(() => db.products.toArray(), []);
@@ -1439,6 +1566,8 @@ function ShoppingListView() {
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const [productId, setProductId] = useState("");
   const [quantity, setQuantity] = useState(1);
+  const selectedProduct = products.find((product) => String(product.id) === productId);
+  const publicOfferQuery = selectedProduct?.genericName || selectedProduct?.name || "";
 
   const availableProducts = useMemo(
     () =>
@@ -1672,6 +1801,7 @@ function ShoppingListView() {
           )}
         </aside>
       </div>
+      <PublicOffersPanel query={publicOfferQuery} />
     </section>
   );
 }
@@ -1937,6 +2067,7 @@ function CompareView() {
           </div>
         </>
       )}
+      {selected.length === 1 && <PublicOffersPanel query={selected[0] ?? ""} />}
     </section>
   );
 }
