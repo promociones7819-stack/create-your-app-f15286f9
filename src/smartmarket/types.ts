@@ -71,3 +71,11 @@ export interface Equivalence {
   brand: string;
   productName: string;
 }
+
+export interface ShoppingListItem {
+  id?: number;
+  productId: number;
+  quantity: number;
+  checked: boolean;
+  createdAt: string;
+}

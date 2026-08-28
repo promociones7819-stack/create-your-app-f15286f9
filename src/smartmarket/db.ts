@@ -1,5 +1,12 @@
 import Dexie, { type Table } from "dexie";
-import type { Equivalence, Product, Purchase, Supermarket, Ticket } from "./types";
+import type {
+  Equivalence,
+  Product,
+  Purchase,
+  ShoppingListItem,
+  Supermarket,
+  Ticket,
+} from "./types";
 
 class SmartMarketDB extends Dexie {
   supermarkets!: Table<Supermarket, number>;
@@ -7,6 +14,7 @@ class SmartMarketDB extends Dexie {
   products!: Table<Product, number>;
   purchases!: Table<Purchase, number>;
   equivalences!: Table<Equivalence, number>;
+  shoppingList!: Table<ShoppingListItem, number>;
 
   constructor() {
     super("smartmarket-local-db");
@@ -21,6 +29,9 @@ class SmartMarketDB extends Dexie {
     });
     this.version(3).stores({
       supermarkets: "++id, name, locality, [name+locality]",
+    });
+    this.version(4).stores({
+      shoppingList: "++id, productId, checked, createdAt",
     });
   }
 }

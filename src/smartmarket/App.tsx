@@ -11,6 +11,7 @@ import {
   History,
   Home,
   ImagePlus,
+  ListChecks,
   ExternalLink,
   MapPin,
   PackageSearch,
@@ -24,6 +25,7 @@ import {
   Store,
   Trash2,
   ScanText,
+  Sparkles,
   Upload,
   Wand2,
   X,
@@ -41,7 +43,15 @@ import {
 import { db, ensureDefaults, MEDINA_SUPERMARKETS } from "./db";
 import { extractText } from "./ocr";
 import { parseReceiptText, type OcrLineDraft, type OcrResult } from "./parser";
-import type { PackageUnit, Product, Purchase, Supermarket, Ticket, TicketLineDraft } from "./types";
+import type {
+  PackageUnit,
+  Product,
+  Purchase,
+  ShoppingListItem,
+  Supermarket,
+  Ticket,
+  TicketLineDraft,
+} from "./types";
 import {
   formatUnitPrice,
   money,
@@ -55,7 +65,15 @@ import {
 // dexie-react-hooks is intentionally imported as a separate package to keep all persistence local.
 // See package.json; Lovable can safely edit this file without requiring a backend.
 
-type View = "dashboard" | "tickets" | "products" | "compare" | "history" | "medina" | "settings";
+type View =
+  | "dashboard"
+  | "tickets"
+  | "products"
+  | "shopping-list"
+  | "compare"
+  | "history"
+  | "medina"
+  | "settings";
 
 type EnrichedPurchase = Purchase & {
   product: Product | undefined;
@@ -69,6 +87,7 @@ type BackupPayload = {
   tickets: ImportedTicket[];
   products: ImportedProduct[];
   purchases: Purchase[];
+  shoppingList?: ShoppingListItem[];
 };
 
 const emptyLine = (): TicketLineDraft => ({
@@ -102,6 +121,7 @@ function App() {
         {view === "dashboard" && <Dashboard onGo={setView} />}
         {view === "tickets" && <TicketsView />}
         {view === "products" && <ProductsView />}
+        {view === "shopping-list" && <ShoppingListView />}
         {view === "compare" && <CompareView />}
         {view === "history" && <HistoryView />}
         {view === "medina" && <MedinaView />}
@@ -116,6 +136,7 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
     { id: "dashboard", label: "Inicio", icon: Home },
     { id: "tickets", label: "Tickets", icon: ReceiptText },
     { id: "products", label: "Productos", icon: ShoppingBasket },
+    { id: "shopping-list", label: "Lista de la compra", icon: ListChecks },
     { id: "compare", label: "Comparador", icon: Scale },
     { id: "history", label: "Histórico", icon: History },
     { id: "medina", label: "Medina de Pomar", icon: MapPin },
@@ -1182,6 +1203,258 @@ function ProductPhoto({ blob, alt }: { blob: Blob; alt: string }) {
   return <img className="product-photo" src={url} alt={alt} />;
 }
 
+function ShoppingListView() {
+  const itemRecords = useLiveQuery(() => db.shoppingList.orderBy("createdAt").toArray(), []);
+  const productRecords = useLiveQuery(() => db.products.toArray(), []);
+  const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
+  const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
+  const items = useMemo(() => itemRecords ?? [], [itemRecords]);
+  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
+  const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
+  const [productId, setProductId] = useState("");
+  const [quantity, setQuantity] = useState(1);
+
+  const availableProducts = useMemo(
+    () =>
+      products
+        .filter((product) => product.id && !items.some((item) => item.productId === product.id))
+        .sort((a, b) => (a.genericName || a.name).localeCompare(b.genericName || b.name, "es")),
+    [items, products],
+  );
+
+  useEffect(() => {
+    if (!availableProducts.some((product) => String(product.id) === productId))
+      setProductId(availableProducts[0]?.id ? String(availableProducts[0].id) : "");
+  }, [availableProducts, productId]);
+
+  const activeItems = items.filter((item) => !item.checked);
+
+  const priceOptions = useMemo(() => {
+    return activeItems.map((item) => {
+      const selectedProduct = products.find((product) => product.id === item.productId);
+      if (!selectedProduct)
+        return { item, product: undefined, byStore: new Map<number, Purchase>() };
+      const equivalents = products.filter(
+        (product) =>
+          product.id === selectedProduct.id ||
+          (selectedProduct.genericName && product.genericName === selectedProduct.genericName),
+      );
+      const equivalentIds = new Set(equivalents.map((product) => product.id));
+      const byStore = new Map<number, Purchase>();
+      purchases
+        .filter((purchase) => equivalentIds.has(purchase.productId))
+        .sort((a, b) => b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0))
+        .forEach((purchase) => {
+          if (!byStore.has(purchase.supermarketId)) byStore.set(purchase.supermarketId, purchase);
+        });
+      return { item, product: selectedProduct, byStore };
+    });
+  }, [activeItems, products, purchases]);
+
+  const storePlans = useMemo(
+    () =>
+      supermarkets
+        .map((supermarket) => {
+          const priced = priceOptions.flatMap(({ item, byStore }) => {
+            const purchase = supermarket.id ? byStore.get(supermarket.id) : undefined;
+            if (!purchase) return [];
+            return [{ item, purchase, cost: packagePrice(purchase) * item.quantity }];
+          });
+          return {
+            supermarket,
+            coverage: priced.length,
+            total: priced.reduce((sum, row) => sum + row.cost, 0),
+          };
+        })
+        .filter((plan) => plan.coverage > 0)
+        .sort((a, b) => b.coverage - a.coverage || a.total - b.total),
+    [priceOptions, supermarkets],
+  );
+
+  const bestStore = storePlans[0];
+  const splitPlan = priceOptions.flatMap(({ item, product, byStore }) => {
+    const cheapest = [...byStore.values()].sort((a, b) => packagePrice(a) - packagePrice(b))[0];
+    if (!cheapest || !product) return [];
+    return [
+      {
+        item,
+        product,
+        purchase: cheapest,
+        supermarket: supermarkets.find((store) => store.id === cheapest.supermarketId),
+        cost: packagePrice(cheapest) * item.quantity,
+      },
+    ];
+  });
+  const splitTotal = splitPlan.reduce((sum, row) => sum + row.cost, 0);
+
+  async function addItem() {
+    const selectedId = Number(productId);
+    if (!selectedId || quantity < 1) return;
+    await db.shoppingList.add({
+      productId: selectedId,
+      quantity: Math.max(1, Math.round(quantity)),
+      checked: false,
+      createdAt: new Date().toISOString(),
+    });
+    setQuantity(1);
+  }
+
+  async function updateItem(item: ShoppingListItem, patch: Partial<ShoppingListItem>) {
+    if (item.id) await db.shoppingList.update(item.id, patch);
+  }
+
+  return (
+    <section className="page">
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">PLANIFICA Y AHORRA</span>
+          <h2>Lista de la compra</h2>
+          <p>
+            Marca lo que ya tienes y descubre dónde sale mejor tu cesta con tus últimos precios.
+          </p>
+        </div>
+      </div>
+
+      <div className="shopping-layout">
+        <div className="panel shopping-list-panel">
+          <div className="shopping-add">
+            <label>
+              Producto
+              <select value={productId} onChange={(event) => setProductId(event.target.value)}>
+                {availableProducts.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.genericName || product.name}
+                    {product.brand ? ` · ${product.brand}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Cantidad
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={quantity}
+                onChange={(event) => setQuantity(Number(event.target.value))}
+              />
+            </label>
+            <button className="primary" disabled={!productId} onClick={() => void addItem()}>
+              <Plus size={18} /> Añadir
+            </button>
+          </div>
+
+          {items.length === 0 ? (
+            <Empty text="Tu lista está vacía. Añade productos de tu catálogo." />
+          ) : (
+            <div className="shopping-items">
+              {items.map((item) => {
+                const product = products.find((candidate) => candidate.id === item.productId);
+                return (
+                  <div
+                    className={item.checked ? "shopping-item checked" : "shopping-item"}
+                    key={item.id}
+                  >
+                    <input
+                      className="shopping-check"
+                      type="checkbox"
+                      checked={item.checked}
+                      aria-label={`Marcar ${product?.name ?? "producto"} como comprado`}
+                      onChange={(event) => void updateItem(item, { checked: event.target.checked })}
+                    />
+                    {product && <ProductThumbnail product={product} />}
+                    <div className="shopping-item-name">
+                      <strong>
+                        {product?.genericName || product?.name || "Producto eliminado"}
+                      </strong>
+                      <span>{product?.brand || product?.name}</span>
+                    </div>
+                    <label className="shopping-quantity">
+                      <span>Uds.</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={item.quantity}
+                        onChange={(event) =>
+                          void updateItem(item, {
+                            quantity: Math.max(1, Number(event.target.value)),
+                          })
+                        }
+                      />
+                    </label>
+                    <button
+                      className="icon-btn danger"
+                      aria-label={`Borrar ${product?.name ?? "producto"}`}
+                      onClick={() => item.id && void db.shoppingList.delete(item.id)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <aside className="shopping-recommendations">
+          <div className="recommendation best shopping-best">
+            <Sparkles size={22} />
+            <span>MEJOR SUPERMERCADO</span>
+            {activeItems.length === 0 ? (
+              <p>Añade o desmarca productos para calcular tu cesta.</p>
+            ) : bestStore ? (
+              <>
+                <h3>{bestStore.supermarket.name}</h3>
+                <strong>{money(bestStore.total)}</strong>
+                <p>
+                  Precio conocido para {bestStore.coverage} de {activeItems.length} productos
+                  {bestStore.coverage < activeItems.length
+                    ? ". Faltan precios en esta tienda."
+                    : "."}
+                </p>
+              </>
+            ) : (
+              <p>Aún no hay precios guardados para estos productos.</p>
+            )}
+          </div>
+
+          {splitPlan.length > 0 && (
+            <div className="panel split-plan">
+              <div className="panel-title">
+                <div>
+                  <h3>Compra más barata</h3>
+                  <p>Repartiendo productos entre tiendas.</p>
+                </div>
+                <strong>{money(splitTotal)}</strong>
+              </div>
+              {splitPlan.map((row) => (
+                <div className="split-row" key={row.item.id}>
+                  <div>
+                    <strong>{row.product.genericName || row.product.name}</strong>
+                    <span>
+                      {row.item.quantity} × {money(packagePrice(row.purchase))}
+                    </span>
+                  </div>
+                  <div>
+                    <strong>{row.supermarket?.name || "Supermercado"}</strong>
+                    <span>{money(row.cost)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function packagePrice(purchase: Purchase) {
+  return Math.max(0, purchase.price - purchase.discount) / Math.max(1, purchase.quantityPurchased);
+}
+
 function CompareView() {
   const productRecords = useLiveQuery(() => db.products.toArray(), []);
   const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
@@ -1736,11 +2009,12 @@ function SettingsView() {
   const [status, setStatus] = useState("");
 
   async function exportData() {
-    const [supermarkets, tickets, products, purchases] = await Promise.all([
+    const [supermarkets, tickets, products, purchases, shoppingList] = await Promise.all([
       db.supermarkets.toArray(),
       db.tickets.toArray(),
       db.products.toArray(),
       db.purchases.toArray(),
+      db.shoppingList.toArray(),
     ]);
     const serializedTickets = await Promise.all(
       tickets.map(async (t) => ({
@@ -1761,6 +2035,7 @@ function SettingsView() {
       tickets: serializedTickets,
       products: serializedProducts,
       purchases,
+      shoppingList,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1801,17 +2076,20 @@ function SettingsView() {
         db.tickets,
         db.products,
         db.purchases,
+        db.shoppingList,
         async () => {
           await Promise.all([
             db.supermarkets.clear(),
             db.tickets.clear(),
             db.products.clear(),
             db.purchases.clear(),
+            db.shoppingList.clear(),
           ]);
           await db.supermarkets.bulkAdd(data.supermarkets);
           await db.products.bulkAdd(restoredProducts);
           await db.tickets.bulkAdd(restoredTickets);
           await db.purchases.bulkAdd(data.purchases);
+          if (data.shoppingList?.length) await db.shoppingList.bulkAdd(data.shoppingList);
         },
       );
       setStatus("Copia restaurada. Recarga la página si algún contador tarda en actualizarse.");
@@ -1827,10 +2105,11 @@ function SettingsView() {
       )
     )
       return;
-    await db.transaction("rw", db.tickets, db.products, db.purchases, async () => {
+    await db.transaction("rw", db.tickets, db.products, db.purchases, db.shoppingList, async () => {
       await db.tickets.clear();
       await db.products.clear();
       await db.purchases.clear();
+      await db.shoppingList.clear();
     });
     setStatus("Datos de compra eliminados.");
   }
