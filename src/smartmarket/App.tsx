@@ -8,6 +8,7 @@ import {
   Database,
   FileDown,
   FileUp,
+  FolderOpen,
   History,
   Home,
   ImagePlus,
@@ -2258,6 +2259,26 @@ function MedinaView() {
 
 function SettingsView() {
   const [status, setStatus] = useState("");
+  const [backupFolder, setBackupFolder] = useState<LocalDirectoryHandle | null>(null);
+  const canChooseFolder = typeof window !== "undefined" && "showDirectoryPicker" in window;
+
+  async function chooseBackupFolder() {
+    const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
+    if (!picker) {
+      setStatus(
+        "Safari no permite elegir una carpeta de escritura. Las copias se guardarán mediante Descargas.",
+      );
+      return;
+    }
+    try {
+      const folder = await picker({ mode: "readwrite" });
+      setBackupFolder(folder);
+      setStatus(`Carpeta seleccionada: ${folder.name}.`);
+    } catch (error: unknown) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setStatus("No se pudo acceder a la carpeta seleccionada.");
+    }
+  }
 
   async function exportData() {
     const [supermarkets, tickets, products, purchases, shoppingList] = await Promise.all([
@@ -2289,10 +2310,23 @@ function SettingsView() {
       shoppingList,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const filename = `smartmarket-backup-${todayISO()}.json`;
+    if (backupFolder) {
+      try {
+        const file = await backupFolder.getFileHandle(filename, { create: true });
+        const writable = await file.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        setStatus(`Copia guardada en ${backupFolder.name}/${filename}.`);
+        return;
+      } catch {
+        setStatus("No se pudo escribir en la carpeta. Se descargará la copia normalmente.");
+      }
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `smartmarket-backup-${todayISO()}.json`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
     setStatus("Copia de seguridad exportada correctamente.");
@@ -2376,6 +2410,21 @@ function SettingsView() {
       </div>
       <div className="settings-grid">
         <div className="panel setting-card">
+          <FolderOpen size={24} />
+          <h3>Carpeta de copias</h3>
+          <p>
+            {backupFolder
+              ? `Las próximas copias se guardarán en “${backupFolder.name}”.`
+              : canChooseFolder
+                ? "Elige dónde guardar directamente las próximas copias JSON."
+                : "Safari guardará las copias en la carpeta de Descargas configurada."}
+          </p>
+          <button className="ghost" onClick={() => void chooseBackupFolder()}>
+            <FolderOpen size={17} />
+            {backupFolder ? "Cambiar carpeta" : "Seleccionar carpeta"}
+          </button>
+        </div>
+        <div className="panel setting-card">
           <FileDown size={24} />
           <h3>Exportar copia</h3>
           <p>Incluye base de datos y archivos originales de tickets.</p>
@@ -2434,6 +2483,24 @@ function SettingsView() {
     </section>
   );
 }
+
+type LocalWritableFile = {
+  write(data: Blob): Promise<void>;
+  close(): Promise<void>;
+};
+
+type LocalFileHandle = {
+  createWritable(): Promise<LocalWritableFile>;
+};
+
+type LocalDirectoryHandle = {
+  name: string;
+  getFileHandle(name: string, options: { create: boolean }): Promise<LocalFileHandle>;
+};
+
+type DirectoryPickerWindow = Window & {
+  showDirectoryPicker?: (options: { mode: "readwrite" }) => Promise<LocalDirectoryHandle>;
+};
 
 function RoadmapItem({ n, title, text }: { n: string; title: string; text: string }) {
   return (
