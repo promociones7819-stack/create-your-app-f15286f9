@@ -39,7 +39,7 @@ export const STORE_RULES: StoreRule[] = [
 const UNIT_RE = /(\d+[.,]?\d*)\s*(kg|kilos?|g|gr|gramos|ml|cl|l|litros?|ud|uds|unidades)\b/i;
 const MULTI_RE = /(\d+)\s*[x×]\s*(\d+[.,]?\d*)\s*(kg|g|gr|ml|cl|l)\b/i;
 const PRICE_RE = /(-?\d+[.,]\d{2})\s*(?:€|eur)?\s*$/i;
-const DATE_RE = /(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})/;
+const DATE_RE = /(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/;
 const IGNORE_RE =
   /(total|tarjeta|efectivo|cambio|iva|base imponible|cuota|factura|ticket|gracias|cajero|caja|n\.?\s*op|importe|tel[ée]fono|c\.?i\.?f|nif|entrega|devoluci|descuento total|pago)/i;
 
@@ -124,7 +124,10 @@ export function detectTotal(text: string): number | null {
 }
 
 /** Convierte el texto OCR en líneas editables. Todo es corregible después. */
-export function parseReceiptText(text: string, equivalences: Record<string, string> = {}): OcrResult {
+export function parseReceiptText(
+  text: string,
+  equivalences: Record<string, string> = {},
+): OcrResult {
   const store = detectSupermarket(text);
   const rule = STORE_RULES.find((r) => r.name === store);
   const lines: OcrLineDraft[] = [];

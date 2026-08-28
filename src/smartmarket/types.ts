@@ -1,4 +1,4 @@
-export type PackageUnit = 'g' | 'kg' | 'ml' | 'l' | 'ud';
+export type PackageUnit = "g" | "kg" | "ml" | "l" | "ud";
 
 export interface Supermarket {
   id?: number;
@@ -45,7 +45,7 @@ export interface Purchase {
   price: number;
   discount: number;
   normalizedUnitPrice: number;
-  normalizedUnit: 'kg' | 'l' | 'ud';
+  normalizedUnit: "kg" | "l" | "ud";
 }
 
 export interface TicketLineDraft {

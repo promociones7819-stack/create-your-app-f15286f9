@@ -32,7 +32,7 @@ function ensurePdfJsCompatibility(): void {
 
 async function loadPdfJs() {
   ensurePdfJsCompatibility();
-  const pdfjs: any = await import("pdfjs-dist");
+  const pdfjs = await import("pdfjs-dist");
   const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
   return pdfjs;
@@ -49,8 +49,8 @@ async function pdfToText(file: File, onProgress?: OcrProgress): Promise<string> 
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const lines = new Map<number, string[]>();
-    for (const item of content.items as any[]) {
-      if (typeof item.str !== "string") continue;
+    for (const item of content.items) {
+      if (!("str" in item) || typeof item.str !== "string") continue;
       const y = Math.round(item.transform[5]);
       const list = lines.get(y) ?? [];
       list.push(item.str);
@@ -74,16 +74,20 @@ async function pdfFirstPageToCanvas(file: File): Promise<HTMLCanvasElement> {
   return canvas;
 }
 
-async function imageToText(source: File | HTMLCanvasElement, onProgress?: OcrProgress): Promise<string> {
+async function imageToText(
+  source: File | HTMLCanvasElement,
+  onProgress?: OcrProgress,
+): Promise<string> {
   const { createWorker } = await import("tesseract.js");
   const worker = await createWorker("spa", 1, {
-    logger: (m: any) => {
+    logger: (m) => {
       if (m.status === "recognizing text") onProgress?.("Reconociendo texto", m.progress);
       else onProgress?.("Preparando motor OCR local", m.progress ?? 0);
     },
   });
   try {
-    const { data } = await worker.recognize(source as any);
+    const recognizeSource: Parameters<typeof worker.recognize>[0] = source;
+    const { data } = await worker.recognize(recognizeSource);
     return data.text;
   } finally {
     await worker.terminate();
