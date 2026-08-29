@@ -1833,6 +1833,13 @@ function PublicCatalogView() {
           })}
         </div>
       )}
+      <div className="affiliate-support-note" role="note">
+        <strong>Gracias por apoyar SmartMarket</strong>
+        <span>
+          Esta página se mantiene gracias a las compras que realizas desde nuestros enlaces de
+          Amazon. El precio para ti no cambia. Gracias por tu colaboración.
+        </span>
+      </div>
       <p className="affiliate-note">Los enlaces de compra abren tiendas externas y algunos pueden ser enlaces de afiliado.</p>
     </section>
   );

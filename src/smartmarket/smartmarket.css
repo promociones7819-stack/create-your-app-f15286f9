@@ -869,6 +869,25 @@ button {
   color: #6c7872;
   font-size: 11px;
 }
+.affiliate-support-note {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 13px 15px;
+  border: 1px solid rgba(214, 166, 42, 0.3);
+  border-radius: 12px;
+  background: rgba(255, 246, 218, 0.88);
+  color: #5f4a1e;
+}
+.affiliate-support-note strong {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+.affiliate-support-note span {
+  font-size: 11px;
+  line-height: 1.45;
+}
 .public-account-panel,
 .public-account-actions,
 .public-login-fields,
