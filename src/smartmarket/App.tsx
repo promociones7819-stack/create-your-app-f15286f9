@@ -170,6 +170,26 @@ const PRODUCT_CATEGORIES = [
 
 const PUBLIC_CATALOG_ADMIN_EMAIL = "promociones7819@gmail.com";
 
+function purchaseStoreName(value?: string | null) {
+  if (!value) return "";
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+    if (
+      hostname === "amzn.to" ||
+      hostname === "link.amazon" ||
+      hostname.startsWith("amazon.") ||
+      hostname.includes(".amazon.")
+    )
+      return "Amazon";
+    if (hostname.includes("mercadona")) return "Mercadona";
+    if (hostname.includes("eroski")) return "Eroski";
+    if (hostname.includes("carrefour")) return "Carrefour";
+    return hostname.split(".")[0]?.replace(/^./, (letter) => letter.toUpperCase()) || "tienda";
+  } catch {
+    return "tienda";
+  }
+}
+
 const emptyLine = (): TicketLineDraft => ({
   id: uid(),
   productName: "",
@@ -1220,6 +1240,19 @@ function ProductsView() {
   async function updateGenericName(product: Product, value: string) {
     if (product.id) await db.products.update(product.id, { genericName: value });
   }
+  async function updateProductIdentity(
+    product: Product,
+    field: "name" | "brand",
+    value: string,
+  ) {
+    if (!product.id) return;
+    const clean = value.trim();
+    if (field === "name" && !clean) {
+      alert("El nombre del producto no puede quedar vacío.");
+      return;
+    }
+    await db.products.update(product.id, { [field]: clean });
+  }
   async function updateCategory(product: Product, category: string) {
     if (product.id) await db.products.update(product.id, { category });
   }
@@ -1318,16 +1351,19 @@ function ProductsView() {
             onChange={(e) => setQuery(e.target.value)}
           />
           <button className="primary" type="button" onClick={() => setShowNewProduct((open) => !open)}>
-            <Plus size={17} /> {showNewProduct ? "Cerrar" : "Nuevo producto"}
+            <Plus size={17} /> {showNewProduct ? "Cerrar" : "Nuevo producto manual"}
           </button>
         </div>
       </div>
       {showNewProduct && (
         <div className="panel new-product-panel">
           <div>
-            <span className="eyebrow">ALTA RÁPIDA</span>
-            <h3>Añadir producto con enlace de compra</h3>
-            <p>El enlace puede ser de Amazon o de cualquier otra tienda.</p>
+            <span className="eyebrow">ALTA MANUAL</span>
+            <h3>Añadir producto recomendado</h3>
+            <p>
+              Pega el enlace de afiliado al crear el producto. Podrás cambiar todos estos datos
+              más adelante.
+            </p>
           </div>
           <div className="form-grid product-create-grid">
             <label>
@@ -1349,13 +1385,14 @@ function ProductsView() {
               </select>
             </label>
             <label className="product-url-field">
-              Enlace de compra
+              Enlace de afiliado o compra
               <input
                 type="url"
                 value={newPurchaseUrl}
                 onChange={(event) => setNewPurchaseUrl(event.target.value)}
-                placeholder="https://link.amazon/B0iBvLPNf"
+                placeholder="https://amzn.to/…"
               />
+              <small>Si es de Amazon, aparecerá automáticamente como recomendado en Amazon.</small>
             </label>
           </div>
           <div className="new-product-footer">
@@ -1368,7 +1405,7 @@ function ProductsView() {
       )}
       {filtered.length === 0 ? (
         <div className="panel">
-          <Empty text="Añade un ticket para empezar a construir tu catálogo." />
+          <Empty text="Crea un producto manualmente o añade un ticket para construir tu catálogo." />
         </div>
       ) : (
         <div className="product-list">
@@ -1419,11 +1456,33 @@ function ProductsView() {
                       </button>
                     )}
                   </div>
-                  <div>
-                    <strong>{product.name}</strong>
-                    <span>
-                      {product.brand || "Sin marca"} · {product.category}
-                    </span>
+                  <div className="product-identity-fields">
+                    <label className="inline-field">
+                      Producto
+                      <input
+                        key={`${product.id}-name-${product.name}`}
+                        defaultValue={product.name}
+                        onBlur={(event) =>
+                          void updateProductIdentity(product, "name", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      Marca
+                      <input
+                        key={`${product.id}-brand-${product.brand}`}
+                        defaultValue={product.brand}
+                        placeholder="Sin marca"
+                        onBlur={(event) =>
+                          void updateProductIdentity(product, "brand", event.target.value)
+                        }
+                      />
+                    </label>
+                    {product.purchaseUrl && (
+                      <span className="recommendation-badge">
+                        Recomendado en {purchaseStoreName(product.purchaseUrl)}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <label className="inline-field">
@@ -1471,7 +1530,7 @@ function ProductsView() {
                 </div>
                 <div className="product-purchase-link">
                   <label className="inline-field">
-                    Enlace de compra
+                    Enlace de afiliado o compra
                     <input
                       type="url"
                       defaultValue={product.purchaseUrl ?? ""}
@@ -1479,6 +1538,7 @@ function ProductsView() {
                       placeholder="Pegar enlace…"
                       onBlur={(event) => void updatePurchaseUrl(product, event.target.value)}
                     />
+                    <small>Se guarda al salir del campo.</small>
                   </label>
                   {product.purchaseUrl && (
                     <a
@@ -1748,13 +1808,18 @@ function PublicCatalogView() {
                 </label>
                 <div>
                   <span className="eyebrow">{product.category}</span>
+                  {product.purchase_url && (
+                    <span className="recommendation-badge public-recommendation-badge">
+                      Recomendado en {purchaseStoreName(product.purchase_url)}
+                    </span>
+                  )}
                   <h3>{product.name}</h3>
                   <p>{product.brand || "Sin marca"} · Equivale a {product.generic_name || product.name}</p>
                 </div>
                 <div className="public-product-actions">
                   {product.purchase_url && (
                     <a className="buy-link" href={product.purchase_url} target="_blank" rel="noopener noreferrer sponsored">
-                      Comprar <ExternalLink size={14} />
+                      Ver en {purchaseStoreName(product.purchase_url)} <ExternalLink size={14} />
                     </a>
                   )}
                   {isCatalogAdmin && user?.id === product.owner_id && (

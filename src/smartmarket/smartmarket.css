@@ -802,6 +802,14 @@ button {
 .product-create-grid .product-url-field {
   grid-column: span 2;
 }
+.product-url-field small,
+.product-purchase-link small {
+  display: block;
+  margin-top: 5px;
+  color: #718078;
+  font-size: 9px;
+  font-weight: 500;
+}
 .new-product-footer {
   display: flex;
   justify-content: flex-end;
@@ -816,6 +824,28 @@ button {
 }
 .product-purchase-link .inline-field {
   min-width: 0;
+}
+.product-identity-fields {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+.product-identity-fields .inline-field {
+  min-width: 0;
+}
+.recommendation-badge {
+  width: fit-content;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #fff0cc;
+  color: #795512;
+  font-size: 9px;
+  font-weight: 800;
+}
+.public-recommendation-badge {
+  display: inline-flex;
+  margin-left: 7px;
+  vertical-align: middle;
 }
 .buy-link {
   min-height: 39px;
