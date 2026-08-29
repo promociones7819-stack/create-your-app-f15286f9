@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
+import type { User } from "@supabase/supabase-js";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -45,6 +46,7 @@ import {
   YAxis,
 } from "recharts";
 import { db, ensureDefaults, MEDINA_SUPERMARKETS } from "./db";
+import { supabase } from "@/integrations/supabase/client";
 import { extractText } from "./ocr";
 import { parseReceiptText, type OcrLineDraft, type OcrResult } from "./parser";
 import type {
@@ -73,6 +75,7 @@ type View =
   | "dashboard"
   | "tickets"
   | "products"
+  | "public-catalog"
   | "supermarkets"
   | "shopping-list"
   | "compare"
@@ -136,6 +139,20 @@ type PublicOffersResponse = {
   sources: { supermarket: string; label: string; url: string }[];
 };
 
+type PublicCatalogProduct = {
+  id: string;
+  owner_id: string;
+  source_product_id: number;
+  name: string;
+  brand: string;
+  generic_name: string;
+  category: string;
+  purchase_url: string | null;
+  rating: number;
+  notes: string;
+  updated_at: string;
+};
+
 const PRODUCT_CATEGORIES = [
   "Frutas y verduras",
   "Carnes y pescados",
@@ -150,6 +167,8 @@ const PRODUCT_CATEGORIES = [
   "Higiene y cuidado personal",
   "Otros",
 ] as const;
+
+const PUBLIC_CATALOG_ADMIN_EMAIL = "promociones7819@gmail.com";
 
 const emptyLine = (): TicketLineDraft => ({
   id: uid(),
@@ -239,6 +258,7 @@ function App() {
         {view === "dashboard" && <Dashboard onGo={setView} />}
         {view === "tickets" && <TicketsView />}
         {view === "products" && <ProductsView />}
+        {view === "public-catalog" && <PublicCatalogView />}
         {view === "supermarkets" && <SupermarketsView />}
         {view === "shopping-list" && <ShoppingListView />}
         {view === "compare" && <CompareView />}
@@ -255,6 +275,7 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
     { id: "dashboard", label: "Inicio", icon: Home },
     { id: "tickets", label: "Tickets", icon: ReceiptText },
     { id: "products", label: "Productos", icon: ShoppingBasket },
+    { id: "public-catalog", label: "Catálogo público", icon: Globe2 },
     { id: "supermarkets", label: "Supermercados", icon: Store },
     { id: "shopping-list", label: "Lista de la compra", icon: ListChecks },
     { id: "compare", label: "Comparador", icon: Scale },
@@ -1490,6 +1511,266 @@ function ProductPhoto({ blob, alt }: { blob: Blob; alt: string }) {
   const url = useMemo(() => URL.createObjectURL(blob), [blob]);
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   return <img className="product-photo" src={url} alt={alt} />;
+}
+
+function publicProductForMatching(product: PublicCatalogProduct): ImportedProduct {
+  return {
+    name: product.name,
+    brand: product.brand,
+    genericName: product.generic_name,
+    category: product.category,
+    rating: product.rating,
+    notes: product.notes,
+    purchaseUrl: product.purchase_url ?? undefined,
+  };
+}
+
+function PublicCatalogView() {
+  const localProductRecords = useLiveQuery(() => db.products.toArray(), []);
+  const localProducts = useMemo(() => localProductRecords ?? [], [localProductRecords]);
+  const [products, setProducts] = useState<PublicCatalogProduct[]>([]);
+  const [user, setUser] = useState<User | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState("");
+  const isCatalogAdmin = user?.email?.toLocaleLowerCase("es-ES") === PUBLIC_CATALOG_ADMIN_EMAIL;
+
+  async function loadPublicProducts() {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("public_products")
+      .select("*")
+      .order("updated_at", { ascending: false });
+    if (error) setStatus(`No se pudo abrir el catálogo: ${error.message}`);
+    else setProducts((data ?? []) as PublicCatalogProduct[]);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    void supabase.auth.getUser().then(({ data }) => setUser(data.user));
+    void loadPublicProducts();
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  const matches = useMemo(() => {
+    const result: Record<string, "exact" | "similar"> = {};
+    products.forEach((product) => {
+      const incoming = publicProductForMatching(product);
+      if (localProducts.some((local) => productsMatchExactly(local, incoming)))
+        result[product.id] = "exact";
+      else if (localProducts.some((local) => productsLookSimilar(local, incoming)))
+        result[product.id] = "similar";
+    });
+    return result;
+  }, [localProducts, products]);
+
+  useEffect(() => {
+    setSelected(products.flatMap((product) => (matches[product.id] ? [] : [product.id])));
+  }, [products, matches]);
+
+  const filtered = products.filter((product) =>
+    `${product.name} ${product.brand} ${product.generic_name} ${product.category}`
+      .toLocaleLowerCase("es-ES")
+      .includes(query.toLocaleLowerCase("es-ES")),
+  );
+
+  async function signIn() {
+    setStatus("");
+    if (!email.trim() || password.length < 6)
+      return setStatus("Escribe tu correo y una contraseña de al menos 6 caracteres.");
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setStatus(error ? error.message : "Sesión iniciada. Ya puedes publicar tus productos.");
+  }
+
+  async function signUp() {
+    setStatus("");
+    if (!email.trim() || password.length < 6)
+      return setStatus("Escribe tu correo y una contraseña de al menos 6 caracteres.");
+    const { error } = await supabase.auth.signUp({ email: email.trim(), password });
+    setStatus(
+      error
+        ? error.message
+        : "Cuenta creada. Si Supabase te envía un correo, confírmalo antes de iniciar sesión.",
+    );
+  }
+
+  async function publishAll() {
+    if (!user) return setStatus("Inicia sesión como administrador para publicar productos.");
+    if (!isCatalogAdmin) return setStatus("Esta cuenta no tiene permiso para publicar productos.");
+    const publishable = localProducts.filter((product): product is Product & { id: number } => Boolean(product.id));
+    if (!publishable.length) return setStatus("No tienes productos locales para publicar.");
+    const rows = publishable.map((product) => ({
+      owner_id: user.id,
+      source_product_id: product.id,
+      name: product.name,
+      brand: product.brand,
+      generic_name: product.genericName,
+      category: product.category,
+      purchase_url: product.purchaseUrl || null,
+      rating: product.rating,
+      notes: product.notes,
+    }));
+    const { error } = await supabase
+      .from("public_products")
+      .upsert(rows, { onConflict: "owner_id,source_product_id" });
+    if (error) return setStatus(`No se pudieron publicar: ${error.message}`);
+    setStatus(`${rows.length} productos publicados o actualizados.`);
+    await loadPublicProducts();
+  }
+
+  async function importSelected() {
+    const chosen = products.filter((product) => selected.includes(product.id));
+    if (!chosen.length) return;
+    let added = 0;
+    let skipped = 0;
+    const knownProducts = [...localProducts];
+    for (const product of chosen) {
+      const incoming = publicProductForMatching(product);
+      if (knownProducts.some((local) => productsMatchExactly(local, incoming))) {
+        skipped += 1;
+        continue;
+      }
+      const newProduct: Product = {
+        name: product.name,
+        brand: product.brand,
+        genericName: product.generic_name || product.name,
+        category: product.category || "Otros",
+        rating: product.rating,
+        notes: product.notes,
+        purchaseUrl: product.purchase_url ?? undefined,
+      };
+      const id = await db.products.add(newProduct);
+      knownProducts.push({ ...newProduct, id });
+      added += 1;
+    }
+    setStatus(`${added} productos añadidos a tu catálogo${skipped ? `; ${skipped} repetidos omitidos` : ""}.`);
+    setSelected([]);
+  }
+
+  async function removePublished(product: PublicCatalogProduct) {
+    if (!user || product.owner_id !== user.id) return;
+    if (!confirm(`¿Retirar “${product.name}” del catálogo público?`)) return;
+    const { error } = await supabase.from("public_products").delete().eq("id", product.id);
+    if (error) setStatus(error.message);
+    else await loadPublicProducts();
+  }
+
+  return (
+    <section className="page public-catalog-page">
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">COMPARTIDO EN LA NUBE</span>
+          <h2>Catálogo público</h2>
+          <p>Productos visibles para cualquiera que abra SmartMarket. Tus tickets siguen siendo privados.</p>
+        </div>
+        <input
+          className="search"
+          placeholder="Buscar en el catálogo…"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
+
+      <div className="panel public-account-panel">
+        {user ? (
+          <>
+            <div>
+              <strong>{isCatalogAdmin ? `Administrador: ${user.email}` : `Sesión: ${user.email}`}</strong>
+              <span>
+                {isCatalogAdmin
+                  ? "Solo esta cuenta puede publicar, actualizar o retirar productos."
+                  : "Esta cuenta puede consultar e incorporar productos, pero no publicarlos."}
+              </span>
+            </div>
+            <div className="public-account-actions">
+              {isCatalogAdmin && (
+                <button className="primary" type="button" onClick={() => void publishAll()}>
+                  <Globe2 size={17} /> Publicar todos mis productos
+                </button>
+              )}
+              <button className="ghost" type="button" onClick={() => void supabase.auth.signOut()}>
+                Cerrar sesión
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <strong>Acceso del administrador</strong>
+              <span>Para mirar o incorporar productos no necesitas iniciar sesión.</span>
+            </div>
+            <div className="public-login-fields">
+              <input type="email" placeholder="Correo" value={email} onChange={(event) => setEmail(event.target.value)} />
+              <input type="password" placeholder="Contraseña" value={password} onChange={(event) => setPassword(event.target.value)} />
+              <button className="primary" type="button" onClick={() => void signIn()}>Entrar</button>
+              <button className="ghost" type="button" onClick={() => void signUp()}>Crear cuenta de administrador</button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {status && <div className="catalog-status">{status}</div>}
+
+      <div className="public-catalog-tools">
+        <span>{filtered.length} productos · {selected.length} seleccionados</span>
+        <div>
+          <button className="ghost" type="button" onClick={() => setSelected(filtered.flatMap((product) => (matches[product.id] ? [] : [product.id])))}>
+            Seleccionar nuevos
+          </button>
+          <button className="primary" type="button" disabled={!selected.length} onClick={() => void importSelected()}>
+            <Plus size={17} /> Añadir seleccionados
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="panel"><Empty text="Cargando el catálogo público…" /></div>
+      ) : filtered.length === 0 ? (
+        <div className="panel"><Empty text="Todavía no hay productos públicos que coincidan." /></div>
+      ) : (
+        <div className="public-product-grid">
+          {filtered.map((product) => {
+            const match = matches[product.id];
+            const checked = selected.includes(product.id);
+            return (
+              <article className={checked ? "public-product-card selected" : "public-product-card"} key={product.id}>
+                <label className="public-product-select">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => setSelected((current) => current.includes(product.id) ? current.filter((id) => id !== product.id) : [...current, product.id])}
+                  />
+                  {match === "exact" ? <em>Ya lo tienes</em> : match === "similar" ? <em className="similar">Producto similar</em> : <em className="new">Nuevo</em>}
+                </label>
+                <div>
+                  <span className="eyebrow">{product.category}</span>
+                  <h3>{product.name}</h3>
+                  <p>{product.brand || "Sin marca"} · Equivale a {product.generic_name || product.name}</p>
+                </div>
+                <div className="public-product-actions">
+                  {product.purchase_url && (
+                    <a className="buy-link" href={product.purchase_url} target="_blank" rel="noopener noreferrer sponsored">
+                      Comprar <ExternalLink size={14} />
+                    </a>
+                  )}
+                  {isCatalogAdmin && user?.id === product.owner_id && (
+                    <button className="icon-btn danger" type="button" title="Retirar del catálogo" onClick={() => void removePublished(product)}>
+                      <Trash2 size={15} />
+                    </button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+      <p className="affiliate-note">Los enlaces de compra abren tiendas externas y algunos pueden ser enlaces de afiliado.</p>
+    </section>
+  );
 }
 
 function SupermarketsView() {
