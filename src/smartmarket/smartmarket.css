@@ -1989,6 +1989,16 @@ button {
 .view-settings::after {
   content: "📁   🏷️   🍏";
 }
+.view-info {
+  --view-accent: #35756a;
+  --view-accent-soft: rgba(88, 167, 151, 0.3);
+  --view-tint: rgba(228, 241, 232, 0.78);
+  --view-background: url("/smartmarket-dashboard-bg.png");
+  background-position: 52% center;
+}
+.view-info::after {
+  content: "?   ✓   🛒   €";
+}
 .main-content .topbar {
   position: relative;
   z-index: 2;
@@ -2205,6 +2215,164 @@ button {
 }
 .view-settings .setting-card:nth-child(4) {
   border-top-color: #b86055;
+}
+.info-page {
+  display: grid;
+  gap: 20px;
+}
+.info-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 26px;
+  border-left: 5px solid var(--view-accent) !important;
+}
+.info-hero h2 {
+  margin: 5px 0 8px;
+  font-size: clamp(28px, 3vw, 42px);
+}
+.info-hero p {
+  max-width: 720px;
+  margin: 0;
+  color: #52665d;
+  line-height: 1.6;
+}
+.info-contact {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 13px;
+  background: #113f32;
+  color: white;
+  text-decoration: none;
+  box-shadow: 0 12px 25px rgba(17, 63, 50, 0.18);
+}
+.info-contact span,
+.info-contact small,
+.info-contact strong {
+  display: block;
+}
+.info-contact small {
+  margin-bottom: 3px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.info-contact strong {
+  font-size: 12px;
+}
+.info-section-heading h3 {
+  margin: 5px 0 0;
+  font-size: 22px;
+}
+.info-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.info-step {
+  display: grid;
+  min-height: 142px;
+  align-content: start;
+  gap: 8px;
+  padding: 18px;
+  border-top: 3px solid var(--view-accent) !important;
+}
+.info-step em {
+  color: var(--view-accent);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+.info-step strong {
+  font-size: 15px;
+}
+.info-step span {
+  color: #66756d;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.info-module-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.info-module-card {
+  display: grid;
+  grid-template-columns: 42px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 16px;
+  color: #17372d;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.info-module-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(53, 117, 106, 0.45);
+}
+.info-module-card > svg {
+  width: 42px;
+  height: 42px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(53, 117, 106, 0.12);
+  color: var(--view-accent);
+}
+.info-module-card strong,
+.info-module-card small {
+  display: block;
+}
+.info-module-card strong {
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+.info-module-card small {
+  color: #68776f;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.info-open {
+  color: var(--view-accent);
+  font-size: 10px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.info-notes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.info-note-card {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 20px;
+}
+.info-note-card > svg {
+  flex: 0 0 auto;
+  color: var(--view-accent);
+}
+.info-note-card h3 {
+  margin: 0 0 7px;
+  font-size: 16px;
+}
+.info-note-card p {
+  margin: 0;
+  color: #617169;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.affiliate-info-card {
+  border-color: rgba(214, 166, 42, 0.34) !important;
+  background: rgba(255, 247, 220, 0.78) !important;
 }
 .sidebar {
   background:
@@ -2675,7 +2843,8 @@ button {
   .hero-grid,
   .content-grid.two,
   .settings-grid,
-  .roadmap-grid {
+  .roadmap-grid,
+  .info-steps {
     grid-template-columns: 1fr;
   }
   .metrics-grid {
@@ -2727,6 +2896,17 @@ button {
   .page-heading {
     flex-direction: column;
     align-items: stretch;
+  }
+  .info-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .info-contact {
+    width: fit-content;
+  }
+  .info-module-grid,
+  .info-notes-grid {
+    grid-template-columns: 1fr;
   }
   .search {
     width: 100%;

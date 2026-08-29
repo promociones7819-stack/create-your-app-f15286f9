@@ -6,6 +6,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
+  CircleHelp,
   Database,
   FileDown,
   FileUp,
@@ -15,6 +16,7 @@ import {
   Home,
   ImagePlus,
   ListChecks,
+  Mail,
   ExternalLink,
   MapPin,
   PackageSearch,
@@ -25,6 +27,7 @@ import {
   Scale,
   Settings,
   Share2,
+  ShieldCheck,
   ShoppingBasket,
   Star,
   Store,
@@ -81,7 +84,8 @@ type View =
   | "compare"
   | "history"
   | "medina"
-  | "settings";
+  | "settings"
+  | "info";
 
 type EnrichedPurchase = Purchase & {
   product: Product | undefined;
@@ -285,6 +289,7 @@ function App() {
         {view === "history" && <HistoryView />}
         {view === "medina" && <MedinaView />}
         {view === "settings" && <SettingsView />}
+        {view === "info" && <InfoView onGo={setView} />}
       </main>
     </div>
   );
@@ -302,6 +307,7 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
     { id: "history", label: "Histórico", icon: History },
     { id: "medina", label: "Medina de Pomar", icon: MapPin },
     { id: "settings", label: "Ajustes", icon: Settings },
+    { id: "info", label: "Información y ayuda", icon: CircleHelp },
   ];
 
   return (
@@ -3396,6 +3402,146 @@ function productsLookSimilar(existing: Product, incoming: ImportedProduct) {
   if (!existingWords.size || !incomingWords.size) return false;
   const overlap = [...incomingWords].filter((word) => existingWords.has(word)).length;
   return overlap / Math.min(existingWords.size, incomingWords.size) >= 0.75;
+}
+
+function InfoView({ onGo }: { onGo: (view: View) => void }) {
+  const modules: Array<{
+    view: View;
+    title: string;
+    description: string;
+    icon: typeof Home;
+  }> = [
+    {
+      view: "tickets",
+      title: "Tickets",
+      description:
+        "Sube una foto o un PDF. Revisa las líneas reconocidas antes de guardar cantidades, formatos y precios.",
+      icon: ReceiptText,
+    },
+    {
+      view: "products",
+      title: "Productos",
+      description:
+        "Consulta y corrige tus productos. También puedes crearlos manualmente y pegar un enlace de afiliado o compra.",
+      icon: ShoppingBasket,
+    },
+    {
+      view: "public-catalog",
+      title: "Catálogo público",
+      description:
+        "Cualquiera puede ver e incorporar los productos publicados. Solo el administrador puede publicarlos o retirarlos.",
+      icon: Globe2,
+    },
+    {
+      view: "supermarkets",
+      title: "Supermercados",
+      description:
+        "Añade y edita tiendas manualmente, y consulta qué productos y precios has guardado en cada una.",
+      icon: Store,
+    },
+    {
+      view: "shopping-list",
+      title: "Lista de la compra",
+      description:
+        "Marca lo que necesitas y deja que SmartMarket recomiende dónde comprar según tus precios guardados.",
+      icon: ListChecks,
+    },
+    {
+      view: "compare",
+      title: "Comparador",
+      description:
+        "Selecciona varios productos y compara por €/kg, €/L o unidad. También puedes consultar ofertas públicas online.",
+      icon: Scale,
+    },
+    {
+      view: "history",
+      title: "Histórico",
+      description:
+        "Elige uno o varios productos para ver la evolución mensual, la media por supermercado y el resumen anual.",
+      icon: History,
+    },
+    {
+      view: "settings",
+      title: "Ajustes y copias",
+      description:
+        "Exporta una copia de seguridad, restaura tus datos o comparte productos sin borrar los del receptor.",
+      icon: Settings,
+    },
+  ];
+
+  return (
+    <section className="page info-page">
+      <div className="info-hero panel">
+        <div>
+          <span className="eyebrow">GUÍA DE SMARTMARKET</span>
+          <h2>Compra mejor, paso a paso</h2>
+          <p>
+            Guarda precios reales, compara formatos y prepara tu compra. No necesitas una cuenta
+            para utilizar las funciones locales.
+          </p>
+        </div>
+        <a className="info-contact" href="mailto:promociones7819@gmail.com">
+          <Mail size={21} />
+          <span>
+            <small>Contacto y ayuda</small>
+            <strong>promociones7819@gmail.com</strong>
+          </span>
+        </a>
+      </div>
+
+      <div className="info-section-heading">
+        <span className="eyebrow">PRIMEROS PASOS</span>
+        <h3>Cómo empezar</h3>
+      </div>
+      <div className="info-steps">
+        <div className="panel info-step"><em>01</em><strong>Añade tus tiendas</strong><span>Crea los supermercados que utilizas habitualmente.</span></div>
+        <div className="panel info-step"><em>02</em><strong>Guarda precios</strong><span>Sube tickets o crea productos manuales con sus enlaces.</span></div>
+        <div className="panel info-step"><em>03</em><strong>Revisa los formatos</strong><span>Indica gramos, litros o unidades para comparar correctamente.</span></div>
+        <div className="panel info-step"><em>04</em><strong>Compara y compra</strong><span>Prepara la lista y consulta la tienda más conveniente.</span></div>
+      </div>
+
+      <div className="info-section-heading">
+        <span className="eyebrow">TODAS LAS FUNCIONES</span>
+        <h3>Qué encontrarás en cada pestaña</h3>
+      </div>
+      <div className="info-module-grid">
+        {modules.map(({ view, title, description, icon: Icon }) => (
+          <button className="panel info-module-card" type="button" key={view} onClick={() => onGo(view)}>
+            <Icon size={22} />
+            <span>
+              <strong>{title}</strong>
+              <small>{description}</small>
+            </span>
+            <span className="info-open">Abrir →</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="info-notes-grid">
+        <div className="panel info-note-card">
+          <ShieldCheck size={26} />
+          <div>
+            <h3>Tus compras siguen siendo privadas</h3>
+            <p>
+              Los tickets, precios y listas se guardan en este navegador. Para llevarlos a otro
+              dispositivo, crea una copia en Ajustes. El catálogo público solo contiene los
+              productos que el administrador decide publicar.
+            </p>
+          </div>
+        </div>
+        <div className="panel info-note-card affiliate-info-card">
+          <ExternalLink size={26} />
+          <div>
+            <h3>Enlaces de compra</h3>
+            <p>
+              Algunos productos recomendados contienen enlaces de afiliado. Las compras hechas
+              desde ellos ayudan a mantener SmartMarket y no aumentan el precio para ti.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function SettingsView() {
