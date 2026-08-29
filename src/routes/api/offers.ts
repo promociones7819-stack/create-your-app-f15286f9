@@ -10,7 +10,7 @@ type PublicOffer = {
   comparablePrice: number | null;
   comparableUnit: "kg" | "l" | "ud" | null;
   format: string | null;
-  promotion?: string;
+  promotion?: string | undefined;
 };
 
 type MercadonaCategory = {
@@ -109,7 +109,7 @@ function collectMercadonaProducts(value: unknown, products: MercadonaProduct[] =
     value.forEach((item) => collectMercadonaProducts(item, products));
   } else if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    if (typeof record.display_name === "string" && record.price_instructions)
+    if (typeof record["display_name"] === "string" && record["price_instructions"])
       products.push(record as MercadonaProduct);
     else Object.values(record).forEach((item) => collectMercadonaProducts(item, products));
   }
