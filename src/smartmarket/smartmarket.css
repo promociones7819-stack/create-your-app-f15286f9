@@ -951,6 +951,22 @@ button {
   background: white;
   padding: 10px;
 }
+.compare-product-picker {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 9px;
+}
+.compare-product-picker .search,
+.compare-product-picker .multi-select {
+  width: 100%;
+}
+.multi-select-empty {
+  display: block;
+  padding: 13px 10px;
+  color: #7a8680;
+  font-size: 11px;
+  text-align: center;
+}
 .multi-select-head {
   display: flex;
   align-items: center;

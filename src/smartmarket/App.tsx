@@ -1999,16 +1999,20 @@ function ProductMultiSelect({
         </button>
       </div>
       <div className="multi-select-options">
-        {options.map((option) => (
-          <label key={option} className={selected.includes(option) ? "selected" : ""}>
-            <input
-              type="checkbox"
-              checked={selected.includes(option)}
-              onChange={() => toggle(option)}
-            />
-            {option}
-          </label>
-        ))}
+        {options.length ? (
+          options.map((option) => (
+            <label key={option} className={selected.includes(option) ? "selected" : ""}>
+              <input
+                type="checkbox"
+                checked={selected.includes(option)}
+                onChange={() => toggle(option)}
+              />
+              {option}
+            </label>
+          ))
+        ) : (
+          <span className="multi-select-empty">No hay productos que coincidan.</span>
+        )}
       </div>
     </div>
   );
@@ -2025,6 +2029,7 @@ function CompareView() {
     () => Array.from(new Set(products.map((p) => p.genericName).filter(Boolean))).sort(),
     [products],
   );
+  const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [selectionReady, setSelectionReady] = useState(false);
   useEffect(() => {
@@ -2033,6 +2038,19 @@ function CompareView() {
       setSelectionReady(true);
     }
   }, [selectionReady, genericNames]);
+  const filteredGenericNames = useMemo(() => {
+    const normalizedQuery = comparableText(query);
+    if (!normalizedQuery) return genericNames;
+    return genericNames.filter((genericName) =>
+      products.some(
+        (product) =>
+          product.genericName === genericName &&
+          comparableText(`${product.name} ${product.brand} ${product.genericName}`).includes(
+            normalizedQuery,
+          ),
+      ),
+    );
+  }, [genericNames, products, query]);
 
   const candidates = useMemo(() => {
     if (!selected.length) return [];
@@ -2095,7 +2113,20 @@ function CompareView() {
           <h2>Mismo producto, distinta marca</h2>
           <p>Se compara el precio normalizado, no solo el precio del envase.</p>
         </div>
-        <ProductMultiSelect options={genericNames} selected={selected} onChange={setSelected} />
+        <div className="compare-product-picker">
+          <input
+            className="search"
+            type="search"
+            placeholder="Buscar producto, marca…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <ProductMultiSelect
+            options={filteredGenericNames}
+            selected={selected}
+            onChange={setSelected}
+          />
+        </div>
       </div>
       {!selected.length ? (
         <div className="panel">
