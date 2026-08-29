@@ -23,6 +23,7 @@ import {
   Save,
   Scale,
   Settings,
+  Share2,
   ShoppingBasket,
   Star,
   Store,
@@ -92,6 +93,21 @@ type BackupPayload = {
   products: ImportedProduct[];
   purchases: Purchase[];
   shoppingList?: ShoppingListItem[];
+};
+
+type SharedListPayload = {
+  kind: "smartmarket-shared-list";
+  version: 1;
+  exportedAt: string;
+  products: ImportedProduct[];
+  supermarkets: Supermarket[];
+  purchases: Purchase[];
+  shoppingList: ShoppingListItem[];
+};
+
+type SharedListPreview = {
+  data: SharedListPayload;
+  duplicateIndexes: number[];
 };
 
 type PublicOffer = {
@@ -1709,6 +1725,7 @@ function ShoppingListView() {
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const [productId, setProductId] = useState("");
   const [quantity, setQuantity] = useState(1);
+  const [shareStatus, setShareStatus] = useState("");
   const selectedProduct = products.find((product) => String(product.id) === productId);
   const publicOfferQuery = selectedProduct?.genericName || selectedProduct?.name || "";
 
@@ -1726,6 +1743,22 @@ function ShoppingListView() {
   }, [availableProducts, productId]);
 
   const activeItems = items.filter((item) => !item.checked);
+
+  async function shareList() {
+    try {
+      const result = await exportSharedShoppingList();
+      setShareStatus(
+        result === "shared"
+          ? "Lista compartida correctamente."
+          : "Archivo de lista descargado para compartirlo con otra persona.",
+      );
+    } catch (error: unknown) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setShareStatus(
+        error instanceof Error ? error.message : "No se ha podido preparar la lista compartida.",
+      );
+    }
+  }
 
   const priceOptions = useMemo(() => {
     return activeItems.map((item) => {
@@ -1811,7 +1844,11 @@ function ShoppingListView() {
             Marca lo que ya tienes y descubre dónde sale mejor tu cesta con tus últimos precios.
           </p>
         </div>
+        <button className="primary" type="button" disabled={!activeItems.length} onClick={() => void shareList()}>
+          <Share2 size={18} /> Compartir lista
+        </button>
       </div>
+      {shareStatus && <div className="status-banner shopping-share-status">{shareStatus}</div>}
 
       <div className="shopping-layout">
         <div className="panel shopping-list-panel">
@@ -2781,10 +2818,254 @@ function MedinaView() {
   );
 }
 
+async function exportSharedShoppingList(): Promise<"shared" | "downloaded"> {
+  const [items, allProducts, allPurchases, allSupermarkets] = await Promise.all([
+    db.shoppingList.toArray().then((rows) => rows.filter((item) => !item.checked)),
+    db.products.toArray(),
+    db.purchases.toArray(),
+    db.supermarkets.toArray(),
+  ]);
+  if (!items.length) throw new Error("La lista de la compra no tiene productos pendientes.");
+  const productIds = new Set(items.map((item) => item.productId));
+  const products = allProducts
+    .filter((product) => product.id && productIds.has(product.id))
+    .map(({ photoBlob: _photoBlob, ...product }) => product);
+  const latestByProductAndStore = new Map<string, Purchase>();
+  allPurchases
+    .filter((purchase) => productIds.has(purchase.productId))
+    .sort((a, b) => b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0))
+    .forEach((purchase) => {
+      const key = `${purchase.productId}-${purchase.supermarketId}`;
+      if (!latestByProductAndStore.has(key)) latestByProductAndStore.set(key, purchase);
+    });
+  const purchases = [...latestByProductAndStore.values()];
+  const supermarketIds = new Set(purchases.map((purchase) => purchase.supermarketId));
+  const supermarkets = allSupermarkets.filter(
+    (supermarket) => supermarket.id && supermarketIds.has(supermarket.id),
+  );
+  const payload: SharedListPayload = {
+    kind: "smartmarket-shared-list",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    products,
+    supermarkets,
+    purchases,
+    shoppingList: items,
+  };
+  const filename = `smartmarket-lista-${todayISO()}.json`;
+  const file = new File([JSON.stringify(payload, null, 2)], filename, {
+    type: "application/json",
+  });
+  if (navigator.share && navigator.canShare?.({ files: [file] })) {
+    await navigator.share({
+      files: [file],
+      title: "Lista de la compra SmartMarket",
+      text: "Lista de productos y últimos precios conocidos.",
+    });
+    return "shared";
+  }
+  downloadBlob(file, filename);
+  return "downloaded";
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function comparableText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("es-ES");
+}
+
+function productsMatch(existing: Product, incoming: ImportedProduct) {
+  if (existing.barcode && incoming.barcode && existing.barcode === incoming.barcode) return true;
+  const sameBrand = comparableText(existing.brand ?? "") === comparableText(incoming.brand ?? "");
+  return (
+    sameBrand &&
+    (comparableText(existing.name) === comparableText(incoming.name) ||
+      (Boolean(existing.genericName) &&
+        comparableText(existing.genericName) === comparableText(incoming.genericName)))
+  );
+}
+
 function SettingsView() {
   const [status, setStatus] = useState("");
   const [backupFolder, setBackupFolder] = useState<LocalDirectoryHandle | null>(null);
+  const [sharedPreview, setSharedPreview] = useState<SharedListPreview>();
+  const [selectedSharedProducts, setSelectedSharedProducts] = useState<number[]>([]);
+  const [addSharedToShoppingList, setAddSharedToShoppingList] = useState(true);
   const canChooseFolder = typeof window !== "undefined" && "showDirectoryPicker" in window;
+
+  async function previewSharedList(file: File) {
+    try {
+      const parsed: unknown = JSON.parse(await file.text());
+      if (
+        !isRecord(parsed) ||
+        parsed["kind"] !== "smartmarket-shared-list" ||
+        parsed["version"] !== 1 ||
+        !Array.isArray(parsed["products"]) ||
+        !Array.isArray(parsed["supermarkets"]) ||
+        !Array.isArray(parsed["purchases"]) ||
+        !Array.isArray(parsed["shoppingList"])
+      )
+        throw new Error("Formato compartido no válido");
+      const data = parsed as SharedListPayload;
+      const existingProducts = await db.products.toArray();
+      const duplicateIndexes = data.products.flatMap((product, index) =>
+        existingProducts.some((existing) => productsMatch(existing, product)) ? [index] : [],
+      );
+      setSharedPreview({ data, duplicateIndexes });
+      setSelectedSharedProducts(data.products.map((_, index) => index));
+      setAddSharedToShoppingList(true);
+      setStatus("");
+    } catch {
+      setStatus("No se pudo abrir el archivo: no parece una lista compartida de SmartMarket.");
+    }
+  }
+
+  function toggleSharedProduct(index: number) {
+    setSelectedSharedProducts((selected) =>
+      selected.includes(index) ? selected.filter((item) => item !== index) : [...selected, index],
+    );
+  }
+
+  async function mergeSharedList() {
+    if (!sharedPreview || !selectedSharedProducts.length) return;
+    const { data } = sharedPreview;
+    const chosenIndexes = new Set(selectedSharedProducts);
+    const chosenProducts = data.products.filter((_, index) => chosenIndexes.has(index));
+    const chosenForeignIds = new Set(
+      chosenProducts.flatMap((product) => (product.id ? [product.id] : [])),
+    );
+    const [existingProducts, existingStores, existingPurchases, existingItems] = await Promise.all([
+      db.products.toArray(),
+      db.supermarkets.toArray(),
+      db.purchases.toArray(),
+      db.shoppingList.toArray(),
+    ]);
+    const productIdMap = new Map<number, number>();
+    const storeIdMap = new Map<number, number>();
+    let addedProducts = 0;
+    let reusedProducts = 0;
+    let addedPrices = 0;
+
+    await db.transaction(
+      "rw",
+      db.supermarkets,
+      db.tickets,
+      db.products,
+      db.purchases,
+      db.shoppingList,
+      async () => {
+        for (const incoming of chosenProducts) {
+          if (!incoming.id) continue;
+          const match = existingProducts.find((product) => productsMatch(product, incoming));
+          if (match?.id) {
+            productIdMap.set(incoming.id, match.id);
+            reusedProducts += 1;
+            continue;
+          }
+          const { id: _id, photoBlob: _photoBlob, ...newProduct } = incoming;
+          const id = await db.products.add(newProduct);
+          productIdMap.set(incoming.id, id);
+          addedProducts += 1;
+        }
+
+        const relevantPurchases = data.purchases.filter((purchase) =>
+          chosenForeignIds.has(purchase.productId),
+        );
+        const relevantStoreIds = new Set(relevantPurchases.map((purchase) => purchase.supermarketId));
+        for (const incoming of data.supermarkets.filter(
+          (store) => store.id && relevantStoreIds.has(store.id),
+        )) {
+          if (!incoming.id) continue;
+          const match = existingStores.find(
+            (store) =>
+              comparableText(store.name) === comparableText(incoming.name) &&
+              comparableText(store.locality ?? "") === comparableText(incoming.locality ?? ""),
+          );
+          if (match?.id) storeIdMap.set(incoming.id, match.id);
+          else {
+            const { id: _id, ...newStore } = incoming;
+            storeIdMap.set(incoming.id, await db.supermarkets.add(newStore));
+          }
+        }
+
+        const importedPriceKeys = new Set<string>();
+        const grouped = new Map<string, Purchase[]>();
+        for (const purchase of relevantPurchases) {
+          const productId = productIdMap.get(purchase.productId);
+          const supermarketId = storeIdMap.get(purchase.supermarketId);
+          if (!productId || !supermarketId) continue;
+          const priceKey = [
+            productId,
+            supermarketId,
+            purchase.date,
+            purchase.normalizedUnit,
+            purchase.normalizedUnitPrice.toFixed(4),
+          ].join("|");
+          const alreadyExists = existingPurchases.some(
+            (existing) =>
+              existing.productId === productId &&
+              existing.supermarketId === supermarketId &&
+              existing.date === purchase.date &&
+              existing.normalizedUnit === purchase.normalizedUnit &&
+              Math.abs(existing.normalizedUnitPrice - purchase.normalizedUnitPrice) < 0.0001,
+          );
+          if (alreadyExists || importedPriceKeys.has(priceKey)) continue;
+          importedPriceKeys.add(priceKey);
+          const groupKey = `${supermarketId}|${purchase.date}`;
+          const rows = grouped.get(groupKey) ?? [];
+          rows.push({ ...purchase, productId, supermarketId });
+          grouped.set(groupKey, rows);
+        }
+
+        for (const rows of grouped.values()) {
+          const first = rows[0]!;
+          const ticketId = await db.tickets.add({
+            supermarketId: first.supermarketId,
+            date: first.date,
+            total: rows.reduce((sum, row) => sum + Math.max(0, row.price - row.discount), 0),
+            filename: "Lista compartida",
+            fileType: "application/json",
+            createdAt: new Date().toISOString(),
+          });
+          for (const row of rows) {
+            const { id: _id, ticketId: _ticketId, ...purchase } = row;
+            await db.purchases.add({ ...purchase, ticketId });
+            addedPrices += 1;
+          }
+        }
+
+        if (addSharedToShoppingList) {
+          const existingProductIds = new Set(existingItems.map((item) => item.productId));
+          for (const incomingItem of data.shoppingList) {
+            const productId = productIdMap.get(incomingItem.productId);
+            if (!productId || existingProductIds.has(productId)) continue;
+            await db.shoppingList.add({
+              productId,
+              quantity: Math.max(1, incomingItem.quantity || 1),
+              checked: false,
+              createdAt: new Date().toISOString(),
+            });
+            existingProductIds.add(productId);
+          }
+        }
+      },
+    );
+    setSharedPreview(undefined);
+    setStatus(
+      `Importación fusionada: ${addedProducts} productos nuevos, ${reusedProducts} coincidentes y ${addedPrices} precios añadidos. Tus datos anteriores se han conservado.`,
+    );
+  }
 
   async function chooseBackupFolder() {
     const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
@@ -2958,6 +3239,23 @@ function SettingsView() {
         </div>
         <div className="panel setting-card">
           <FileUp size={24} />
+          <h3>Incorporar lista compartida</h3>
+          <p>Revisa y fusiona productos, supermercados y precios sin borrar tus datos.</p>
+          <label className="file-button">
+            <FileUp size={17} /> Abrir lista
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void previewSharedList(file);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
+        </div>
+        <div className="panel setting-card">
+          <FileUp size={24} />
           <h3>Restaurar copia</h3>
           <p>Sustituye los datos locales actuales por una copia previa.</p>
           <label className="file-button">
@@ -2979,6 +3277,69 @@ function SettingsView() {
         </div>
       </div>
       {status && <div className="status-banner">{status}</div>}
+      {sharedPreview && (
+        <div className="modal-backdrop">
+          <div className="modal shared-list-modal" role="dialog" aria-modal="true" aria-label="Revisar lista compartida">
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow">IMPORTACIÓN SIN BORRADO</span>
+                <h2>Selecciona qué productos incorporar</h2>
+                <p>
+                  Los productos coincidentes usarán tu ficha actual. Solo se añadirán precios que no estén ya guardados.
+                </p>
+              </div>
+              <button className="icon-btn" type="button" aria-label="Cerrar" onClick={() => setSharedPreview(undefined)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="shared-list-tools">
+              <strong>{selectedSharedProducts.length} de {sharedPreview.data.products.length} seleccionados</strong>
+              <button className="ghost" type="button" onClick={() => setSelectedSharedProducts(sharedPreview.data.products.map((_, index) => index))}>
+                Seleccionar todos
+              </button>
+              <button className="ghost" type="button" onClick={() => setSelectedSharedProducts([])}>
+                Ninguno
+              </button>
+            </div>
+            <div className="shared-product-list">
+              {sharedPreview.data.products.map((product, index) => {
+                const prices = product.id
+                  ? sharedPreview.data.purchases.filter((purchase) => purchase.productId === product.id)
+                  : [];
+                const duplicate = sharedPreview.duplicateIndexes.includes(index);
+                return (
+                  <label className={selectedSharedProducts.includes(index) ? "shared-product selected" : "shared-product"} key={`${product.id ?? index}-${product.name}`}>
+                    <input
+                      type="checkbox"
+                      checked={selectedSharedProducts.includes(index)}
+                      onChange={() => toggleSharedProduct(index)}
+                    />
+                    <div>
+                      <strong>{product.genericName || product.name}</strong>
+                      <span>{product.brand || product.name} · {prices.length} precios compartidos</span>
+                    </div>
+                    {duplicate ? <em>POSIBLE DUPLICADO</em> : <em className="new">NUEVO</em>}
+                  </label>
+                );
+              })}
+            </div>
+            <label className="shared-shopping-option">
+              <input
+                type="checkbox"
+                checked={addSharedToShoppingList}
+                onChange={(event) => setAddSharedToShoppingList(event.target.checked)}
+              />
+              Añadir también los seleccionados a mi lista de la compra
+            </label>
+            <div className="modal-footer shared-list-footer">
+              <button className="ghost" type="button" onClick={() => setSharedPreview(undefined)}>Cancelar</button>
+              <button className="primary" type="button" disabled={!selectedSharedProducts.length} onClick={() => void mergeSharedList()}>
+                <Plus size={17} /> Incorporar seleccionados
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="panel roadmap">
         <h3>Siguientes módulos previstos</h3>
         <div className="roadmap-grid">
