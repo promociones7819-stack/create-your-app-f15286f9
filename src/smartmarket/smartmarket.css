@@ -1341,9 +1341,6 @@ button {
   border-radius: 11px;
   font-size: 13px;
 }
-.shopping-share-status {
-  margin: -8px 0 16px;
-}
 .shared-list-modal {
   width: min(760px, 100%);
   max-height: min(820px, 92vh);
@@ -1392,8 +1389,7 @@ button {
   border-color: #80a98d;
   background: #edf5ef;
 }
-.shared-product input,
-.shared-shopping-option input {
+.shared-product input {
   width: 18px;
   height: 18px;
   accent-color: #173e31;
@@ -1417,16 +1413,9 @@ button {
   background: #e3f0e7;
   color: #28704a;
 }
-.shared-shopping-option {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: 14px;
-  padding: 12px;
-  border-radius: 10px;
-  background: #f2f5f3;
-  font-size: 12px;
-  font-weight: 800;
+.shared-product em.similar {
+  background: #fce8dc;
+  color: #a44d25;
 }
 .shared-list-footer {
   justify-content: flex-end;

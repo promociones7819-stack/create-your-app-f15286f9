@@ -107,7 +107,7 @@ type SharedListPayload = {
 
 type SharedListPreview = {
   data: SharedListPayload;
-  duplicateIndexes: number[];
+  matches: Record<number, "exact" | "similar">;
 };
 
 type PublicOffer = {
@@ -1725,7 +1725,6 @@ function ShoppingListView() {
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const [productId, setProductId] = useState("");
   const [quantity, setQuantity] = useState(1);
-  const [shareStatus, setShareStatus] = useState("");
   const selectedProduct = products.find((product) => String(product.id) === productId);
   const publicOfferQuery = selectedProduct?.genericName || selectedProduct?.name || "";
 
@@ -1744,21 +1743,6 @@ function ShoppingListView() {
 
   const activeItems = items.filter((item) => !item.checked);
 
-  async function shareList() {
-    try {
-      const result = await exportSharedShoppingList();
-      setShareStatus(
-        result === "shared"
-          ? "Lista compartida correctamente."
-          : "Archivo de lista descargado para compartirlo con otra persona.",
-      );
-    } catch (error: unknown) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      setShareStatus(
-        error instanceof Error ? error.message : "No se ha podido preparar la lista compartida.",
-      );
-    }
-  }
 
   const priceOptions = useMemo(() => {
     return activeItems.map((item) => {
@@ -1844,11 +1828,7 @@ function ShoppingListView() {
             Marca lo que ya tienes y descubre dónde sale mejor tu cesta con tus últimos precios.
           </p>
         </div>
-        <button className="primary" type="button" disabled={!activeItems.length} onClick={() => void shareList()}>
-          <Share2 size={18} /> Compartir lista
-        </button>
       </div>
-      {shareStatus && <div className="status-banner shopping-share-status">{shareStatus}</div>}
 
       <div className="shopping-layout">
         <div className="panel shopping-list-panel">
@@ -2818,17 +2798,15 @@ function MedinaView() {
   );
 }
 
-async function exportSharedShoppingList(): Promise<"shared" | "downloaded"> {
-  const [items, allProducts, allPurchases, allSupermarkets] = await Promise.all([
-    db.shoppingList.toArray().then((rows) => rows.filter((item) => !item.checked)),
+async function exportSharedProducts() {
+  const [allProducts, allPurchases, allSupermarkets] = await Promise.all([
     db.products.toArray(),
     db.purchases.toArray(),
     db.supermarkets.toArray(),
   ]);
-  if (!items.length) throw new Error("La lista de la compra no tiene productos pendientes.");
-  const productIds = new Set(items.map((item) => item.productId));
+  if (!allProducts.length) throw new Error("No hay productos guardados para compartir.");
+  const productIds = new Set(allProducts.flatMap((product) => (product.id ? [product.id] : [])));
   const products = allProducts
-    .filter((product) => product.id && productIds.has(product.id))
     .map(({ photoBlob: _photoBlob, ...product }) => product);
   const latestByProductAndStore = new Map<string, Purchase>();
   allPurchases
@@ -2850,22 +2828,13 @@ async function exportSharedShoppingList(): Promise<"shared" | "downloaded"> {
     products,
     supermarkets,
     purchases,
-    shoppingList: items,
+    shoppingList: [],
   };
-  const filename = `smartmarket-lista-${todayISO()}.json`;
-  const file = new File([JSON.stringify(payload, null, 2)], filename, {
-    type: "application/json",
-  });
-  if (navigator.share && navigator.canShare?.({ files: [file] })) {
-    await navigator.share({
-      files: [file],
-      title: "Lista de la compra SmartMarket",
-      text: "Lista de productos y últimos precios conocidos.",
-    });
-    return "shared";
-  }
-  downloadBlob(file, filename);
-  return "downloaded";
+  const filename = `smartmarket-productos-${todayISO()}.json`;
+  downloadBlob(
+    new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+    filename,
+  );
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -2885,15 +2854,28 @@ function comparableText(value: string) {
     .toLocaleLowerCase("es-ES");
 }
 
-function productsMatch(existing: Product, incoming: ImportedProduct) {
+function productsMatchExactly(existing: Product, incoming: ImportedProduct) {
   if (existing.barcode && incoming.barcode && existing.barcode === incoming.barcode) return true;
-  const sameBrand = comparableText(existing.brand ?? "") === comparableText(incoming.brand ?? "");
   return (
-    sameBrand &&
-    (comparableText(existing.name) === comparableText(incoming.name) ||
-      (Boolean(existing.genericName) &&
-        comparableText(existing.genericName) === comparableText(incoming.genericName)))
+    comparableText(existing.brand ?? "") === comparableText(incoming.brand ?? "") &&
+    comparableText(existing.name) === comparableText(incoming.name)
   );
+}
+
+function productsLookSimilar(existing: Product, incoming: ImportedProduct) {
+  if (
+    existing.genericName &&
+    incoming.genericName &&
+    comparableText(existing.genericName) === comparableText(incoming.genericName)
+  )
+    return true;
+  const words = (value: string) =>
+    new Set(comparableText(value).split(/[^a-z0-9]+/).filter((word) => word.length > 2));
+  const existingWords = words(existing.name);
+  const incomingWords = words(incoming.name);
+  if (!existingWords.size || !incomingWords.size) return false;
+  const overlap = [...incomingWords].filter((word) => existingWords.has(word)).length;
+  return overlap / Math.min(existingWords.size, incomingWords.size) >= 0.75;
 }
 
 function SettingsView() {
@@ -2901,8 +2883,16 @@ function SettingsView() {
   const [backupFolder, setBackupFolder] = useState<LocalDirectoryHandle | null>(null);
   const [sharedPreview, setSharedPreview] = useState<SharedListPreview>();
   const [selectedSharedProducts, setSelectedSharedProducts] = useState<number[]>([]);
-  const [addSharedToShoppingList, setAddSharedToShoppingList] = useState(true);
   const canChooseFolder = typeof window !== "undefined" && "showDirectoryPicker" in window;
+
+  async function shareProducts() {
+    try {
+      await exportSharedProducts();
+      setStatus("Archivo de productos descargado. Ya puedes enviarlo a otra persona.");
+    } catch (error: unknown) {
+      setStatus(error instanceof Error ? error.message : "No se pudo crear el archivo compartido.");
+    }
+  }
 
   async function previewSharedList(file: File) {
     try {
@@ -2919,12 +2909,17 @@ function SettingsView() {
         throw new Error("Formato compartido no válido");
       const data = parsed as SharedListPayload;
       const existingProducts = await db.products.toArray();
-      const duplicateIndexes = data.products.flatMap((product, index) =>
-        existingProducts.some((existing) => productsMatch(existing, product)) ? [index] : [],
+      const matches: Record<number, "exact" | "similar"> = {};
+      data.products.forEach((product, index) => {
+        if (existingProducts.some((existing) => productsMatchExactly(existing, product)))
+          matches[index] = "exact";
+        else if (existingProducts.some((existing) => productsLookSimilar(existing, product)))
+          matches[index] = "similar";
+      });
+      setSharedPreview({ data, matches });
+      setSelectedSharedProducts(
+        data.products.flatMap((_, index) => (matches[index] ? [] : [index])),
       );
-      setSharedPreview({ data, duplicateIndexes });
-      setSelectedSharedProducts(data.products.map((_, index) => index));
-      setAddSharedToShoppingList(true);
       setStatus("");
     } catch {
       setStatus("No se pudo abrir el archivo: no parece una lista compartida de SmartMarket.");
@@ -2945,11 +2940,10 @@ function SettingsView() {
     const chosenForeignIds = new Set(
       chosenProducts.flatMap((product) => (product.id ? [product.id] : [])),
     );
-    const [existingProducts, existingStores, existingPurchases, existingItems] = await Promise.all([
+    const [existingProducts, existingStores, existingPurchases] = await Promise.all([
       db.products.toArray(),
       db.supermarkets.toArray(),
       db.purchases.toArray(),
-      db.shoppingList.toArray(),
     ]);
     const productIdMap = new Map<number, number>();
     const storeIdMap = new Map<number, number>();
@@ -2963,11 +2957,10 @@ function SettingsView() {
       db.tickets,
       db.products,
       db.purchases,
-      db.shoppingList,
       async () => {
         for (const incoming of chosenProducts) {
           if (!incoming.id) continue;
-          const match = existingProducts.find((product) => productsMatch(product, incoming));
+          const match = existingProducts.find((product) => productsMatchExactly(product, incoming));
           if (match?.id) {
             productIdMap.set(incoming.id, match.id);
             reusedProducts += 1;
@@ -3045,20 +3038,6 @@ function SettingsView() {
           }
         }
 
-        if (addSharedToShoppingList) {
-          const existingProductIds = new Set(existingItems.map((item) => item.productId));
-          for (const incomingItem of data.shoppingList) {
-            const productId = productIdMap.get(incomingItem.productId);
-            if (!productId || existingProductIds.has(productId)) continue;
-            await db.shoppingList.add({
-              productId,
-              quantity: Math.max(1, incomingItem.quantity || 1),
-              checked: false,
-              createdAt: new Date().toISOString(),
-            });
-            existingProductIds.add(productId);
-          }
-        }
       },
     );
     setSharedPreview(undefined);
@@ -3238,9 +3217,17 @@ function SettingsView() {
           </button>
         </div>
         <div className="panel setting-card">
+          <Share2 size={24} />
+          <h3>Compartir productos</h3>
+          <p>Descarga tus productos guardados, supermercados y últimos precios para enviarlos.</p>
+          <button className="primary" type="button" onClick={() => void shareProducts()}>
+            <Share2 size={17} /> Descargar archivo
+          </button>
+        </div>
+        <div className="panel setting-card">
           <FileUp size={24} />
-          <h3>Incorporar lista compartida</h3>
-          <p>Revisa y fusiona productos, supermercados y precios sin borrar tus datos.</p>
+          <h3>Incorporar productos compartidos</h3>
+          <p>Selecciona y fusiona productos, supermercados y precios sin borrar tus datos.</p>
           <label className="file-button">
             <FileUp size={17} /> Abrir lista
             <input
@@ -3306,7 +3293,7 @@ function SettingsView() {
                 const prices = product.id
                   ? sharedPreview.data.purchases.filter((purchase) => purchase.productId === product.id)
                   : [];
-                const duplicate = sharedPreview.duplicateIndexes.includes(index);
+                const match = sharedPreview.matches[index];
                 return (
                   <label className={selectedSharedProducts.includes(index) ? "shared-product selected" : "shared-product"} key={`${product.id ?? index}-${product.name}`}>
                     <input
@@ -3318,19 +3305,17 @@ function SettingsView() {
                       <strong>{product.genericName || product.name}</strong>
                       <span>{product.brand || product.name} · {prices.length} precios compartidos</span>
                     </div>
-                    {duplicate ? <em>POSIBLE DUPLICADO</em> : <em className="new">NUEVO</em>}
+                    {match === "exact" ? (
+                      <em>YA EXISTE</em>
+                    ) : match === "similar" ? (
+                      <em className="similar">PRODUCTO SIMILAR</em>
+                    ) : (
+                      <em className="new">NUEVO</em>
+                    )}
                   </label>
                 );
               })}
             </div>
-            <label className="shared-shopping-option">
-              <input
-                type="checkbox"
-                checked={addSharedToShoppingList}
-                onChange={(event) => setAddSharedToShoppingList(event.target.checked)}
-              />
-              Añadir también los seleccionados a mi lista de la compra
-            </label>
             <div className="modal-footer shared-list-footer">
               <button className="ghost" type="button" onClick={() => setSharedPreview(undefined)}>Cancelar</button>
               <button className="primary" type="button" disabled={!selectedSharedProducts.length} onClick={() => void mergeSharedList()}>
