@@ -827,6 +827,69 @@ button {
 .store-directory.standalone {
   margin-top: 0;
 }
+.supermarket-manager {
+  margin-bottom: 18px;
+}
+.supermarket-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.3fr auto auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 16px;
+}
+.supermarket-form label {
+  display: grid;
+  gap: 6px;
+  color: #68746e;
+  font-size: 11px;
+  font-weight: 800;
+}
+.supermarket-form input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid #dbe1dd;
+  border-radius: 9px;
+  background: white;
+  color: #18221e;
+}
+.form-error {
+  margin: 10px 0 0;
+  color: #a43d38;
+  font-size: 12px;
+  font-weight: 700;
+}
+.supermarket-admin-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 18px;
+  max-height: 300px;
+  overflow: auto;
+}
+.supermarket-admin-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e4e9e6;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.74);
+}
+.supermarket-admin-row.editing {
+  border-color: #76a488;
+  background: #edf5ef;
+}
+.supermarket-admin-row strong,
+.supermarket-admin-row span {
+  display: block;
+}
+.supermarket-admin-row span {
+  margin-top: 2px;
+  color: #7a8680;
+  font-size: 10px;
+}
 .directory-count {
   display: flex;
   align-items: center;
@@ -1155,6 +1218,15 @@ button {
   font-weight: 700;
   text-align: right;
 }
+.public-offer .public-promotion {
+  width: max-content;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #fff0cc;
+  color: #8b631c;
+  font-size: 9px;
+  font-weight: 900;
+}
 .public-offer em {
   display: inline-flex;
   align-items: center;
@@ -1405,6 +1477,10 @@ button {
     grid-template-columns: 1fr;
   }
   .form-grid.three {
+    grid-template-columns: 1fr;
+  }
+  .supermarket-form,
+  .supermarket-admin-list {
     grid-template-columns: 1fr;
   }
   .modal-backdrop {

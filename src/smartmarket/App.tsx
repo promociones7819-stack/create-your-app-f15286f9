@@ -17,6 +17,7 @@ import {
   ExternalLink,
   MapPin,
   PackageSearch,
+  Pencil,
   Plus,
   ReceiptText,
   Save,
@@ -103,6 +104,7 @@ type PublicOffer = {
   comparablePrice: number | null;
   comparableUnit: "kg" | "l" | "ud" | null;
   format: string | null;
+  promotion?: string;
 };
 type PublicOffersResponse = {
   query: string;
@@ -1346,6 +1348,52 @@ function SupermarketsView() {
   const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const storesWithPurchases = new Set(purchases.map((purchase) => purchase.supermarketId)).size;
+  const [editingId, setEditingId] = useState<number>();
+  const [name, setName] = useState("");
+  const [locality, setLocality] = useState("");
+  const [address, setAddress] = useState("");
+  const [storeError, setStoreError] = useState("");
+
+  function clearStoreForm() {
+    setEditingId(undefined);
+    setName("");
+    setLocality("");
+    setAddress("");
+    setStoreError("");
+  }
+
+  function editStore(supermarket: Supermarket) {
+    setEditingId(supermarket.id);
+    setName(supermarket.name);
+    setLocality(supermarket.locality ?? "");
+    setAddress(supermarket.address ?? "");
+    setStoreError("");
+  }
+
+  async function saveStore() {
+    const cleanName = name.trim();
+    const cleanLocality = locality.trim();
+    const cleanAddress = address.trim();
+    if (!cleanName) return setStoreError("Escribe el nombre del supermercado.");
+    const duplicate = supermarkets.some(
+      (store) =>
+        store.id !== editingId &&
+        store.name.trim().toLocaleLowerCase("es-ES") ===
+          cleanName.toLocaleLowerCase("es-ES") &&
+        (store.locality ?? "").trim().toLocaleLowerCase("es-ES") ===
+          cleanLocality.toLocaleLowerCase("es-ES"),
+    );
+    if (duplicate) return setStoreError("Ese supermercado y localidad ya están guardados.");
+
+    const record: Omit<Supermarket, "id"> = {
+      name: cleanName,
+      ...(cleanLocality ? { locality: cleanLocality } : {}),
+      ...(cleanAddress ? { address: cleanAddress } : {}),
+    };
+    if (editingId) await db.supermarkets.update(editingId, record);
+    else await db.supermarkets.add(record);
+    clearStoreForm();
+  }
 
   return (
     <section className="page">
@@ -1362,6 +1410,79 @@ function SupermarketsView() {
           <Store size={19} />
           <strong>{storesWithPurchases}</strong>
           <span>con compras</span>
+        </div>
+      </div>
+      <div className="panel supermarket-manager">
+        <div className="panel-title">
+          <div>
+            <h3>{editingId ? "Editar supermercado" : "Añadir supermercado"}</h3>
+            <p>Crea cada establecimiento con su localidad para identificar mejor tus compras.</p>
+          </div>
+          <Store size={20} />
+        </div>
+        <div className="supermarket-form">
+          <label>
+            Nombre
+            <input
+              value={name}
+              placeholder="Ej. BM Urban"
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label>
+            Localidad
+            <input
+              value={locality}
+              placeholder="Ej. Getxo"
+              onChange={(event) => setLocality(event.target.value)}
+            />
+          </label>
+          <label>
+            Dirección (opcional)
+            <input
+              value={address}
+              placeholder="Calle y número"
+              onChange={(event) => setAddress(event.target.value)}
+            />
+          </label>
+          <button className="primary" type="button" onClick={() => void saveStore()}>
+            <Save size={17} /> {editingId ? "Guardar cambios" : "Añadir"}
+          </button>
+          {editingId && (
+            <button className="ghost" type="button" onClick={clearStoreForm}>
+              <X size={17} /> Cancelar
+            </button>
+          )}
+        </div>
+        {storeError && <p className="form-error">{storeError}</p>}
+        <div className="supermarket-admin-list">
+          {supermarkets
+            .slice()
+            .sort(
+              (a, b) =>
+                a.name.localeCompare(b.name, "es") ||
+                (a.locality ?? "").localeCompare(b.locality ?? "", "es"),
+            )
+            .map((supermarket) => (
+              <div className={editingId === supermarket.id ? "supermarket-admin-row editing" : "supermarket-admin-row"} key={supermarket.id}>
+                <div className="store-icon"><Store size={17} /></div>
+                <div>
+                  <strong>{supermarket.name}</strong>
+                  <span>
+                    {[supermarket.locality, supermarket.address].filter(Boolean).join(" · ") ||
+                      "Sin localidad"}
+                  </span>
+                </div>
+                <button
+                  className="icon-btn"
+                  type="button"
+                  aria-label={`Editar ${supermarket.name}`}
+                  onClick={() => editStore(supermarket)}
+                >
+                  <Pencil size={16} />
+                </button>
+              </div>
+            ))}
         </div>
       </div>
       <StoreProductDirectory
@@ -1544,6 +1665,7 @@ function PublicOffersPanel({ query }: { query: string }) {
                       : "Precio por unidad no disponible"}
                     {offer.format ? <span>Formato: {offer.format}</span> : null}
                   </p>
+                  {offer.promotion && <p className="public-promotion">{offer.promotion}</p>}
                   <p>{offer.location}</p>
                   <em>
                     Ver fuente <ExternalLink size={13} />

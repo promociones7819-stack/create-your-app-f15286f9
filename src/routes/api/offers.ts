@@ -10,6 +10,28 @@ type PublicOffer = {
   comparablePrice: number | null;
   comparableUnit: "kg" | "l" | "ud" | null;
   format: string | null;
+  promotion?: string;
+};
+
+type MercadonaCategory = {
+  id: number;
+  name: string;
+  categories?: { id: number; name: string }[];
+};
+type MercadonaProduct = {
+  display_name?: string;
+  share_url?: string;
+  packaging?: string;
+  price_instructions?: {
+    unit_price?: string;
+    previous_unit_price?: string | null;
+    reference_price?: string;
+    reference_format?: string;
+    unit_size?: number;
+    size_format?: string;
+    total_units?: number;
+    price_decreased?: boolean;
+  };
 };
 
 const SEARCH_AREA = {
@@ -30,6 +52,15 @@ const SEARCH_AREA = {
 };
 
 const EROSKI_SEARCH = "https://supermercado.eroski.es/es/search/results/";
+const MERCADONA_API = "https://tienda.mercadona.es/api/categories/";
+const MERCADONA_CACHE_MS = 30 * 60 * 1000;
+let mercadonaCategoryCache:
+  | { expiresAt: number; categories: MercadonaCategory[] }
+  | undefined;
+const mercadonaProductCache = new Map<
+  number,
+  { expiresAt: number; products: MercadonaProduct[] }
+>();
 
 function decodeHtml(value: string) {
   return value
@@ -38,6 +69,136 @@ function decodeHtml(value: string) {
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+function normalizedWords(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es-ES")
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length > 2 && !["del", "con", "sin", "para"].includes(word));
+}
+
+async function fetchJson(url: string, timeoutMs = 8_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: "application/json", "User-Agent": "SmartMarket/1.0" },
+    });
+    if (!response.ok) throw new Error(`El catálogo respondió ${response.status}`);
+    return (await response.json()) as unknown;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getMercadonaCategories() {
+  if (mercadonaCategoryCache && mercadonaCategoryCache.expiresAt > Date.now())
+    return mercadonaCategoryCache.categories;
+  const payload = (await fetchJson(MERCADONA_API)) as { results?: MercadonaCategory[] };
+  const categories = payload.results ?? [];
+  mercadonaCategoryCache = { expiresAt: Date.now() + MERCADONA_CACHE_MS, categories };
+  return categories;
+}
+
+function collectMercadonaProducts(value: unknown, products: MercadonaProduct[] = []) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectMercadonaProducts(item, products));
+  } else if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.display_name === "string" && record.price_instructions)
+      products.push(record as MercadonaProduct);
+    else Object.values(record).forEach((item) => collectMercadonaProducts(item, products));
+  }
+  return products;
+}
+
+async function getMercadonaProducts(categoryId: number) {
+  const cached = mercadonaProductCache.get(categoryId);
+  if (cached && cached.expiresAt > Date.now()) return cached.products;
+  const payload = await fetchJson(`${MERCADONA_API}${categoryId}/`);
+  const products = collectMercadonaProducts(payload);
+  mercadonaProductCache.set(categoryId, {
+    expiresAt: Date.now() + MERCADONA_CACHE_MS,
+    products,
+  });
+  return products;
+}
+
+function mercadonaFormat(product: MercadonaProduct) {
+  const price = product.price_instructions;
+  if (!price) return null;
+  const size = price.unit_size;
+  const unit = price.size_format;
+  const total = price.total_units;
+  if (total && total > 1 && size && unit)
+    return `${total} uds. · ${String(size).replace(".", ",")} ${unit}`;
+  if (size && unit) return `${String(size).replace(".", ",")} ${unit}`;
+  if (total) return `${total} uds.`;
+  return product.packaging ?? null;
+}
+
+async function searchMercadona(query: string) {
+  const words = normalizedWords(query);
+  const categories = await getMercadonaCategories();
+  const searchableCategories = categories.flatMap((category) =>
+    (category.categories ?? []).map((subcategory) => ({
+      id: subcategory.id,
+      label: `${category.name} ${subcategory.name}`,
+    })),
+  );
+  const ranked = searchableCategories
+    .map((category) => ({
+      category,
+      score: words.filter((word) => normalizedWords(category.label).includes(word)).length,
+    }))
+    .sort((a, b) => b.score - a.score);
+  const categoryIds = ranked[0]?.score
+    ? ranked.filter((entry) => entry.score === ranked[0]!.score).slice(0, 4).map((entry) => entry.category.id)
+    : [];
+  if (!categoryIds.length) return [];
+  const productGroups = await Promise.all(categoryIds.map((id) => getMercadonaProducts(id)));
+  const candidates = productGroups.flat().filter((product) => {
+    const nameWords = normalizedWords(product.display_name ?? "");
+    return words.length > 0 && words.every((word) => nameWords.some((nameWord) => nameWord.includes(word)));
+  });
+
+  return candidates
+    .flatMap((product): PublicOffer[] => {
+      const instructions = product.price_instructions;
+      const price = Number(instructions?.unit_price);
+      const comparablePrice = Number(instructions?.reference_price);
+      const referenceUnit = instructions?.reference_format?.toLocaleLowerCase("es-ES");
+      const comparableUnit = referenceUnit === "kg" || referenceUnit === "l" || referenceUnit === "ud"
+        ? referenceUnit
+        : null;
+      if (!product.display_name || !product.share_url || !Number.isFinite(price) || price <= 0)
+        return [];
+      return [{
+        name: product.display_name,
+        supermarket: "Mercadona",
+        price,
+        url: product.share_url,
+        location: "Precio publicado en la tienda online de Mercadona",
+        onlinePrice: true,
+        comparablePrice:
+          Number.isFinite(comparablePrice) && comparablePrice > 0 ? comparablePrice : null,
+        comparableUnit,
+        format: mercadonaFormat(product),
+        promotion: instructions?.price_decreased
+          ? `Precio bajado${instructions.previous_unit_price ? ` desde ${instructions.previous_unit_price} €` : ""}`
+          : undefined,
+      }];
+    })
+    .sort(
+      (a, b) =>
+        (a.comparablePrice ?? Number.POSITIVE_INFINITY) -
+          (b.comparablePrice ?? Number.POSITIVE_INFINITY) || a.price - b.price,
+    )
+    .slice(0, 8);
 }
 
 function comparablePriceFromName(name: string, price: number) {
@@ -157,11 +318,19 @@ export const Route = createFileRoute("/api/offers")({
 
         let offers: PublicOffer[] = [];
         const warnings: string[] = [];
-        try {
-          offers = await searchEroski(query);
-        } catch {
-          warnings.push("EROSKI no ha respondido en esta consulta.");
-        }
+        const [eroskiResult, mercadonaResult] = await Promise.allSettled([
+          searchEroski(query),
+          searchMercadona(query),
+        ]);
+        if (eroskiResult.status === "fulfilled") offers.push(...eroskiResult.value);
+        else warnings.push("EROSKI no ha respondido en esta consulta.");
+        if (mercadonaResult.status === "fulfilled") offers.push(...mercadonaResult.value);
+        else warnings.push("Mercadona no ha respondido en esta consulta.");
+        offers.sort(
+          (a, b) =>
+            (a.comparablePrice ?? Number.POSITIVE_INFINITY) -
+              (b.comparablePrice ?? Number.POSITIVE_INFINITY) || a.price - b.price,
+        );
 
         return Response.json(
           {

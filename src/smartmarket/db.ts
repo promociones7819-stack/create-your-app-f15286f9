@@ -52,7 +52,6 @@ export const DEFAULT_SUPERMARKETS = [
   "Lupa",
   "SPAR",
   "Makro",
-  "Otro",
 ];
 
 export const MEDINA_SUPERMARKETS = [
