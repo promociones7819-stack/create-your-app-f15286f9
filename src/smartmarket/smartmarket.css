@@ -772,10 +772,72 @@ button {
   padding: 13px 15px;
   display: grid;
   grid-template-columns:
-    minmax(190px, 1.2fr) minmax(180px, 1fr) minmax(160px, 0.8fr) 135px minmax(145px, 0.7fr)
+    minmax(190px, 1.2fr) minmax(180px, 1fr) minmax(160px, 0.8fr) 135px minmax(145px, 0.7fr) minmax(190px, 0.9fr)
     40px;
   gap: 14px;
   align-items: center;
+}
+.product-heading-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.product-heading-actions .search {
+  min-width: 230px;
+}
+.new-product-panel {
+  margin-bottom: 16px;
+}
+.new-product-panel h3 {
+  margin: 5px 0 3px;
+}
+.new-product-panel > div:first-child p {
+  margin: 0 0 16px;
+  color: #68766f;
+  font-size: 13px;
+}
+.product-create-grid {
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+}
+.product-create-grid .product-url-field {
+  grid-column: span 2;
+}
+.new-product-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 16px;
+  margin-top: 14px;
+}
+.product-purchase-link {
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+}
+.product-purchase-link .inline-field {
+  min-width: 0;
+}
+.buy-link {
+  min-height: 39px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 11px;
+  border-radius: 9px;
+  background: #f4bf27;
+  color: #24332c;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.buy-link:hover {
+  background: #e7ad08;
+}
+.affiliate-note {
+  margin: 12px 2px 0;
+  color: #6c7872;
+  font-size: 11px;
 }
 .product-main {
   display: flex;
@@ -1502,6 +1564,9 @@ button {
   .product-row {
     grid-template-columns: 1.2fr 1fr 1fr;
   }
+  .product-create-grid {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
   .metrics-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1597,6 +1662,24 @@ button {
   }
   .product-row {
     grid-template-columns: 1fr;
+  }
+  .product-heading-actions,
+  .new-product-footer,
+  .product-purchase-link {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .product-heading-actions .search {
+    min-width: 0;
+  }
+  .product-create-grid {
+    grid-template-columns: 1fr;
+  }
+  .product-create-grid .product-url-field {
+    grid-column: auto;
+  }
+  .buy-link {
+    justify-content: center;
   }
   .rating {
     order: 3;

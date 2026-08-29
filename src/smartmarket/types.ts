@@ -27,6 +27,7 @@ export interface Product {
   barcode?: string;
   rating: number;
   notes: string;
+  purchaseUrl?: string;
   photoName?: string;
   photoType?: string;
   photoBlob?: Blob;

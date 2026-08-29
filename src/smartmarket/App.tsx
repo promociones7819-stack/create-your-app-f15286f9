@@ -1182,6 +1182,13 @@ function ProductsView() {
   const purchases = useLiveQuery(() => db.purchases.toArray(), []) ?? [];
   const supermarkets = useLiveQuery(() => db.supermarkets.toArray(), []) ?? [];
   const [query, setQuery] = useState("");
+  const [showNewProduct, setShowNewProduct] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newBrand, setNewBrand] = useState("");
+  const [newGenericName, setNewGenericName] = useState("");
+  const [newCategory, setNewCategory] = useState<string>(PRODUCT_CATEGORIES[5]);
+  const [newPurchaseUrl, setNewPurchaseUrl] = useState("");
+  const [productError, setProductError] = useState("");
   const filtered = products.filter((p) =>
     `${p.name} ${p.brand} ${p.genericName}`.toLowerCase().includes(query.toLowerCase()),
   );
@@ -1194,6 +1201,60 @@ function ProductsView() {
   }
   async function updateCategory(product: Product, category: string) {
     if (product.id) await db.products.update(product.id, { category });
+  }
+  function cleanPurchaseUrl(value: string) {
+    const clean = value.trim();
+    if (!clean) return "";
+    return /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
+  }
+  function isValidPurchaseUrl(value: string) {
+    if (!value) return true;
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" || url.protocol === "http:";
+    } catch {
+      return false;
+    }
+  }
+  async function updatePurchaseUrl(product: Product, value: string) {
+    if (!product.id) return;
+    const purchaseUrl = cleanPurchaseUrl(value);
+    if (!isValidPurchaseUrl(purchaseUrl)) {
+      alert("El enlace no es válido. Debe ser una dirección web como https://link.amazon/…");
+      return;
+    }
+    await db.products.update(product.id, { purchaseUrl });
+  }
+  async function createProduct() {
+    setProductError("");
+    const name = newName.trim();
+    const brand = newBrand.trim();
+    const genericName = newGenericName.trim() || name;
+    const purchaseUrl = cleanPurchaseUrl(newPurchaseUrl);
+    if (!name) return setProductError("Escribe el nombre del producto.");
+    if (!isValidPurchaseUrl(purchaseUrl))
+      return setProductError("El enlace no es válido. Usa una dirección que empiece por https://");
+    const duplicate = products.some(
+      (product) =>
+        comparableText(product.name) === comparableText(name) &&
+        comparableText(product.brand) === comparableText(brand),
+    );
+    if (duplicate) return setProductError("Ese producto y marca ya están guardados.");
+    await db.products.add({
+      name,
+      brand,
+      genericName,
+      category: newCategory,
+      rating: 0,
+      notes: "",
+      ...(purchaseUrl ? { purchaseUrl } : {}),
+    });
+    setNewName("");
+    setNewBrand("");
+    setNewGenericName("");
+    setNewCategory(PRODUCT_CATEGORIES[5]);
+    setNewPurchaseUrl("");
+    setShowNewProduct(false);
   }
   async function updatePhoto(product: Product, photo?: File) {
     if (!product.id) return;
@@ -1228,13 +1289,62 @@ function ProductsView() {
           <h2>Productos y equivalencias</h2>
           <p>El campo “Producto genérico” une marcas diferentes para poder compararlas.</p>
         </div>
-        <input
-          className="search"
-          placeholder="Buscar producto…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="product-heading-actions">
+          <input
+            className="search"
+            placeholder="Buscar producto…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button className="primary" type="button" onClick={() => setShowNewProduct((open) => !open)}>
+            <Plus size={17} /> {showNewProduct ? "Cerrar" : "Nuevo producto"}
+          </button>
+        </div>
       </div>
+      {showNewProduct && (
+        <div className="panel new-product-panel">
+          <div>
+            <span className="eyebrow">ALTA RÁPIDA</span>
+            <h3>Añadir producto con enlace de compra</h3>
+            <p>El enlace puede ser de Amazon o de cualquier otra tienda.</p>
+          </div>
+          <div className="form-grid product-create-grid">
+            <label>
+              Nombre *
+              <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Cápsulas de café avellana" />
+            </label>
+            <label>
+              Marca
+              <input value={newBrand} onChange={(event) => setNewBrand(event.target.value)} placeholder="by Amazon" />
+            </label>
+            <label>
+              Producto genérico
+              <input value={newGenericName} onChange={(event) => setNewGenericName(event.target.value)} placeholder="Cápsulas de café" />
+            </label>
+            <label>
+              Categoría
+              <select value={newCategory} onChange={(event) => setNewCategory(event.target.value)}>
+                {PRODUCT_CATEGORIES.map((category) => <option key={category}>{category}</option>)}
+              </select>
+            </label>
+            <label className="product-url-field">
+              Enlace de compra
+              <input
+                type="url"
+                value={newPurchaseUrl}
+                onChange={(event) => setNewPurchaseUrl(event.target.value)}
+                placeholder="https://link.amazon/B0iBvLPNf"
+              />
+            </label>
+          </div>
+          <div className="new-product-footer">
+            <span className="error">{productError}</span>
+            <button className="primary" type="button" onClick={() => void createProduct()}>
+              <Save size={17} /> Guardar producto
+            </button>
+          </div>
+        </div>
+      )}
       {filtered.length === 0 ? (
         <div className="panel">
           <Empty text="Añade un ticket para empezar a construir tu catálogo." />
@@ -1338,6 +1448,29 @@ function ProductsView() {
                       : "—"}
                   </strong>
                 </div>
+                <div className="product-purchase-link">
+                  <label className="inline-field">
+                    Enlace de compra
+                    <input
+                      type="url"
+                      defaultValue={product.purchaseUrl ?? ""}
+                      key={`${product.id}-${product.purchaseUrl ?? ""}`}
+                      placeholder="Pegar enlace…"
+                      onBlur={(event) => void updatePurchaseUrl(product, event.target.value)}
+                    />
+                  </label>
+                  {product.purchaseUrl && (
+                    <a
+                      className="buy-link"
+                      href={product.purchaseUrl}
+                      target="_blank"
+                      rel="noopener noreferrer sponsored"
+                      aria-label={`Comprar ${product.name} en la tienda externa`}
+                    >
+                      Comprar <ExternalLink size={14} />
+                    </a>
+                  )}
+                </div>
                 <button className="icon-btn danger" onClick={() => deleteProduct(product)}>
                   <Trash2 size={16} />
                 </button>
@@ -1346,6 +1479,9 @@ function ProductsView() {
           })}
         </div>
       )}
+      <p className="affiliate-note">
+        Los botones de compra abren una tienda externa. Algunos enlaces pueden ser de afiliado.
+      </p>
     </section>
   );
 }
