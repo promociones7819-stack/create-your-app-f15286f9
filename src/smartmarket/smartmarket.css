@@ -1802,6 +1802,31 @@ button {
 .setting-card p {
   flex: 1;
 }
+.setting-card > button + button {
+  margin-top: 9px;
+}
+.backup-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 12px;
+  color: #426c57;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+.backup-status svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.backup-warning {
+  display: block;
+  margin: -5px 0 12px;
+  color: #94651e;
+  font-size: 10px;
+  line-height: 1.4;
+}
 .danger-zone > svg {
   color: #b34b43;
 }

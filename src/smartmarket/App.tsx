@@ -98,11 +98,21 @@ type ImportedTicket = Omit<Ticket, "fileBlob"> & { fileBlob?: unknown };
 type ImportedProduct = Omit<Product, "photoBlob"> & { photoBlob?: unknown };
 type BackupPayload = {
   version: number;
+  exportedAt?: string;
   supermarkets: Supermarket[];
   tickets: ImportedTicket[];
   products: ImportedProduct[];
   purchases: Purchase[];
   shoppingList?: ShoppingListItem[];
+};
+
+type AutoBackupReason = "startup" | "hourly" | "page-hidden";
+type AutoBackupStatus = {
+  at: string;
+  reason: AutoBackupReason;
+  destination: "folder" | "internal";
+  folderName?: string;
+  warning?: string;
 };
 
 type SharedListPayload = {
@@ -195,6 +205,12 @@ const PRODUCT_CATEGORIES = [
 ] as const;
 
 const PUBLIC_CATALOG_ADMIN_EMAIL = "promociones7819@gmail.com";
+const AUTO_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
+const BACKUP_FOLDER_SETTING = "backup-folder";
+const INTERNAL_BACKUP_SETTING = "automatic-backup";
+const LAST_BACKUP_STATUS_SETTING = "automatic-backup-status";
+const AUTOMATIC_BACKUP_FILENAME = "smartmarket-backup-ultima.json";
+let automaticBackupInFlight: Promise<AutoBackupStatus> | null = null;
 
 function purchaseStoreName(value?: string | null) {
   if (!value) return "";
@@ -266,6 +282,36 @@ function App() {
       if (timeoutId) clearTimeout(timeoutId);
     };
   }, [bootAttempt]);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    const save = (reason: AutoBackupReason) => {
+      void runAutomaticBackup(reason).catch(() => undefined);
+    };
+    const saveIfDue = async () => {
+      const previous = await db.appSettings.get(LAST_BACKUP_STATUS_SETTING);
+      const previousStatus = previous?.value as AutoBackupStatus | undefined;
+      const previousTime = previousStatus?.at ? Date.parse(previousStatus.at) : 0;
+      if (!previousTime || Date.now() - previousTime >= AUTO_BACKUP_INTERVAL_MS)
+        save("startup");
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") save("page-hidden");
+    };
+    const onPageHide = () => save("page-hidden");
+
+    void saveIfDue();
+    const interval = window.setInterval(() => save("hourly"), AUTO_BACKUP_INTERVAL_MS);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", onPageHide);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [ready]);
 
   function retryBoot() {
     db.close();
@@ -3833,7 +3879,7 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
       view: "products",
       title: "Productos",
       description:
-        "Consulta y corrige tus productos. También puedes crearlos manualmente y pegar un enlace de afiliado o compra.",
+        "Consulta y corrige tus productos. El administrador puede crearlos manualmente y añadir enlaces de compra.",
       icon: ShoppingBasket,
     },
     {
@@ -3875,7 +3921,7 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
       view: "settings",
       title: "Ajustes y copias",
       description:
-        "Exporta una copia de seguridad, restaura tus datos o comparte productos sin borrar los del receptor.",
+        "Autoguarda cada hora, exporta o restaura tus datos y comparte productos sin borrar los del receptor.",
       icon: Settings,
     },
   ];
@@ -3906,7 +3952,7 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
       </div>
       <div className="info-steps">
         <div className="panel info-step"><em>01</em><strong>Añade tus tiendas</strong><span>Crea los supermercados que utilizas habitualmente.</span></div>
-        <div className="panel info-step"><em>02</em><strong>Guarda precios</strong><span>Sube tickets o crea productos manuales con sus enlaces.</span></div>
+        <div className="panel info-step"><em>02</em><strong>Guarda precios</strong><span>Sube tickets o incorpora productos del catálogo público.</span></div>
         <div className="panel info-step"><em>03</em><strong>Revisa los formatos</strong><span>Indica gramos, litros o unidades para comparar correctamente.</span></div>
         <div className="panel info-step"><em>04</em><strong>Compara y compra</strong><span>Prepara la lista y consulta la tienda más conveniente.</span></div>
       </div>
@@ -3955,12 +4001,131 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
   );
 }
 
+async function createBackupPayload(): Promise<BackupPayload> {
+  const [supermarkets, tickets, products, purchases, shoppingList] = await Promise.all([
+    db.supermarkets.toArray(),
+    db.tickets.toArray(),
+    db.products.toArray(),
+    db.purchases.toArray(),
+    db.shoppingList.toArray(),
+  ]);
+  const serializedTickets = await Promise.all(
+    tickets.map(async (ticket) => ({
+      ...ticket,
+      fileBlob: ticket.fileBlob ? await blobToDataUrl(ticket.fileBlob) : undefined,
+    })),
+  );
+  const serializedProducts = await Promise.all(
+    products.map(async (product) => ({
+      ...product,
+      photoBlob: product.photoBlob ? await blobToDataUrl(product.photoBlob) : undefined,
+    })),
+  );
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    supermarkets,
+    tickets: serializedTickets,
+    products: serializedProducts,
+    purchases,
+    shoppingList,
+  };
+}
+
+function backupBlob(payload: BackupPayload) {
+  return new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+}
+
+async function hasFolderWritePermission(folder: LocalDirectoryHandle, request: boolean) {
+  if (!folder.queryPermission) return true;
+  const options = { mode: "readwrite" } as const;
+  if ((await folder.queryPermission(options)) === "granted") return true;
+  if (request && folder.requestPermission)
+    return (await folder.requestPermission(options)) === "granted";
+  return false;
+}
+
+async function writeBackupFile(
+  folder: LocalDirectoryHandle,
+  payload: BackupPayload,
+  filename: string,
+) {
+  const file = await folder.getFileHandle(filename, { create: true });
+  const writable = await file.createWritable();
+  await writable.write(backupBlob(payload));
+  await writable.close();
+}
+
+async function performAutomaticBackup(reason: AutoBackupReason): Promise<AutoBackupStatus> {
+  const payload = await createBackupPayload();
+  const at = new Date().toISOString();
+  await db.appSettings.put({ key: INTERNAL_BACKUP_SETTING, value: payload, updatedAt: at });
+
+  const storedFolder = await db.appSettings.get(BACKUP_FOLDER_SETTING);
+  const folder = storedFolder?.value as LocalDirectoryHandle | undefined;
+  let status: AutoBackupStatus = { at, reason, destination: "internal" };
+
+  if (folder?.getFileHandle) {
+    try {
+      if (await hasFolderWritePermission(folder, false)) {
+        await writeBackupFile(folder, payload, AUTOMATIC_BACKUP_FILENAME);
+        status = { at, reason, destination: "folder", folderName: folder.name };
+      } else {
+        status.warning = "Vuelve a seleccionar la carpeta para reactivar el acceso de escritura.";
+      }
+    } catch {
+      status.warning = "La copia interna se guardó, pero no se pudo escribir en la carpeta.";
+    }
+  }
+
+  await db.appSettings.put({
+    key: LAST_BACKUP_STATUS_SETTING,
+    value: status,
+    updatedAt: at,
+  });
+  return status;
+}
+
+function runAutomaticBackup(reason: AutoBackupReason) {
+  if (automaticBackupInFlight) return automaticBackupInFlight;
+  automaticBackupInFlight = performAutomaticBackup(reason).finally(() => {
+    automaticBackupInFlight = null;
+  });
+  return automaticBackupInFlight;
+}
+
+function isBackupPayload(value: unknown): value is BackupPayload {
+  return (
+    isRecord(value) &&
+    value["version"] === 1 &&
+    Array.isArray(value["supermarkets"]) &&
+    Array.isArray(value["tickets"]) &&
+    Array.isArray(value["products"]) &&
+    Array.isArray(value["purchases"])
+  );
+}
+
 function SettingsView() {
   const [status, setStatus] = useState("");
   const [backupFolder, setBackupFolder] = useState<LocalDirectoryHandle | null>(null);
   const [sharedPreview, setSharedPreview] = useState<SharedListPreview>();
   const [selectedSharedProducts, setSelectedSharedProducts] = useState<number[]>([]);
   const canChooseFolder = typeof window !== "undefined" && "showDirectoryPicker" in window;
+  const automaticBackup = useLiveQuery(
+    () => db.appSettings.get(INTERNAL_BACKUP_SETTING),
+    [],
+  );
+  const automaticBackupStatus = useLiveQuery(
+    () => db.appSettings.get(LAST_BACKUP_STATUS_SETTING),
+    [],
+  )?.value as AutoBackupStatus | undefined;
+
+  useEffect(() => {
+    void db.appSettings.get(BACKUP_FOLDER_SETTING).then((setting) => {
+      const folder = setting?.value as LocalDirectoryHandle | undefined;
+      if (folder?.getFileHandle) setBackupFolder(folder);
+    });
+  }, []);
 
   async function shareProducts() {
     try {
@@ -4134,7 +4299,17 @@ function SettingsView() {
     try {
       const folder = await picker({ mode: "readwrite" });
       setBackupFolder(folder);
-      setStatus(`Carpeta seleccionada: ${folder.name}.`);
+      await db.appSettings.put({
+        key: BACKUP_FOLDER_SETTING,
+        value: folder,
+        updatedAt: new Date().toISOString(),
+      });
+      const backup = await runAutomaticBackup("startup");
+      setStatus(
+        backup.destination === "folder"
+          ? `Carpeta seleccionada y primera copia guardada en ${folder.name}/${AUTOMATIC_BACKUP_FILENAME}.`
+          : `Carpeta seleccionada: ${folder.name}. ${backup.warning ?? "La copia interna está activa."}`,
+      );
     } catch (error: unknown) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setStatus("No se pudo acceder a la carpeta seleccionada.");
@@ -4142,42 +4317,14 @@ function SettingsView() {
   }
 
   async function exportData() {
-    const [supermarkets, tickets, products, purchases, shoppingList] = await Promise.all([
-      db.supermarkets.toArray(),
-      db.tickets.toArray(),
-      db.products.toArray(),
-      db.purchases.toArray(),
-      db.shoppingList.toArray(),
-    ]);
-    const serializedTickets = await Promise.all(
-      tickets.map(async (t) => ({
-        ...t,
-        fileBlob: t.fileBlob ? await blobToDataUrl(t.fileBlob) : undefined,
-      })),
-    );
-    const serializedProducts = await Promise.all(
-      products.map(async (p) => ({
-        ...p,
-        photoBlob: p.photoBlob ? await blobToDataUrl(p.photoBlob) : undefined,
-      })),
-    );
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      supermarkets,
-      tickets: serializedTickets,
-      products: serializedProducts,
-      purchases,
-      shoppingList,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const payload = await createBackupPayload();
+    const blob = backupBlob(payload);
     const filename = `smartmarket-backup-${todayISO()}.json`;
     if (backupFolder) {
       try {
-        const file = await backupFolder.getFileHandle(filename, { create: true });
-        const writable = await file.createWritable();
-        await writable.write(blob);
-        await writable.close();
+        if (!(await hasFolderWritePermission(backupFolder, true)))
+          throw new Error("Permiso de escritura denegado");
+        await writeBackupFile(backupFolder, payload, filename);
         setStatus(`Copia guardada en ${backupFolder.name}/${filename}.`);
         return;
       } catch {
@@ -4193,54 +4340,65 @@ function SettingsView() {
     setStatus("Copia de seguridad exportada correctamente.");
   }
 
+  async function restoreBackup(data: BackupPayload) {
+    const restoredTickets = data.tickets.map((ticket): Ticket => {
+      const { fileBlob, ...rest } = ticket;
+      return typeof fileBlob === "string" ? { ...rest, fileBlob: dataUrlToBlob(fileBlob) } : rest;
+    });
+    const restoredProducts = data.products.map((product): Product => {
+      const { photoBlob, ...rest } = product;
+      return typeof photoBlob === "string"
+        ? { ...rest, photoBlob: dataUrlToBlob(photoBlob) }
+        : rest;
+    });
+    await db.transaction(
+      "rw",
+      db.supermarkets,
+      db.tickets,
+      db.products,
+      db.purchases,
+      db.shoppingList,
+      async () => {
+        await Promise.all([
+          db.supermarkets.clear(),
+          db.tickets.clear(),
+          db.products.clear(),
+          db.purchases.clear(),
+          db.shoppingList.clear(),
+        ]);
+        await db.supermarkets.bulkAdd(data.supermarkets);
+        await db.products.bulkAdd(restoredProducts);
+        await db.tickets.bulkAdd(restoredTickets);
+        await db.purchases.bulkAdd(data.purchases);
+        if (data.shoppingList?.length) await db.shoppingList.bulkAdd(data.shoppingList);
+      },
+    );
+  }
+
   async function importData(file: File) {
     try {
       const parsed: unknown = JSON.parse(await file.text());
-      if (
-        !isRecord(parsed) ||
-        parsed["version"] !== 1 ||
-        !Array.isArray(parsed["supermarkets"]) ||
-        !Array.isArray(parsed["tickets"]) ||
-        !Array.isArray(parsed["products"]) ||
-        !Array.isArray(parsed["purchases"])
-      )
-        throw new Error("Formato no válido");
-      const data = parsed as BackupPayload;
-      const restoredTickets = data.tickets.map((ticket): Ticket => {
-        const { fileBlob, ...rest } = ticket;
-        return typeof fileBlob === "string" ? { ...rest, fileBlob: dataUrlToBlob(fileBlob) } : rest;
-      });
-      const restoredProducts = data.products.map((product): Product => {
-        const { photoBlob, ...rest } = product;
-        return typeof photoBlob === "string"
-          ? { ...rest, photoBlob: dataUrlToBlob(photoBlob) }
-          : rest;
-      });
-      await db.transaction(
-        "rw",
-        db.supermarkets,
-        db.tickets,
-        db.products,
-        db.purchases,
-        db.shoppingList,
-        async () => {
-          await Promise.all([
-            db.supermarkets.clear(),
-            db.tickets.clear(),
-            db.products.clear(),
-            db.purchases.clear(),
-            db.shoppingList.clear(),
-          ]);
-          await db.supermarkets.bulkAdd(data.supermarkets);
-          await db.products.bulkAdd(restoredProducts);
-          await db.tickets.bulkAdd(restoredTickets);
-          await db.purchases.bulkAdd(data.purchases);
-          if (data.shoppingList?.length) await db.shoppingList.bulkAdd(data.shoppingList);
-        },
-      );
+      if (!isBackupPayload(parsed)) throw new Error("Formato no válido");
+      await restoreBackup(parsed);
       setStatus("Copia restaurada. Recarga la página si algún contador tarda en actualizarse.");
     } catch {
       setStatus("No se pudo importar el archivo: no parece una copia válida de SmartMarket.");
+    }
+  }
+
+  async function restoreAutomaticBackup() {
+    const payload = automaticBackup?.value;
+    if (!isBackupPayload(payload)) {
+      setStatus("Todavía no hay un autoguardado interno disponible.");
+      return;
+    }
+    if (!confirm("Se sustituirán los datos actuales por el último autoguardado. ¿Continuar?"))
+      return;
+    try {
+      await restoreBackup(payload);
+      setStatus("Último autoguardado restaurado correctamente.");
+    } catch {
+      setStatus("No se pudo restaurar el autoguardado interno.");
     }
   }
 
@@ -4275,11 +4433,20 @@ function SettingsView() {
           <h3>Carpeta de copias</h3>
           <p>
             {backupFolder
-              ? `Las próximas copias se guardarán en “${backupFolder.name}”.`
+              ? `Autoguardado cada hora y al cerrar en “${backupFolder.name}”.`
               : canChooseFolder
-                ? "Elige dónde guardar directamente las próximas copias JSON."
-                : "Safari guardará las copias en la carpeta de Descargas configurada."}
+                ? "Elige una carpeta para guardar automáticamente una copia cada hora y al cerrar."
+                : "Safari no permite escribir automáticamente en una carpeta. Se mantendrá una copia interna recuperable."}
           </p>
+          <span className="backup-status">
+            <Save size={14} />
+            {automaticBackupStatus
+              ? `Último autoguardado: ${new Date(automaticBackupStatus.at).toLocaleString("es-ES")}${automaticBackupStatus.destination === "folder" ? ` · ${automaticBackupStatus.folderName}` : " · copia interna"}`
+              : "El primer autoguardado se creará al iniciar."}
+          </span>
+          {automaticBackupStatus?.warning && (
+            <small className="backup-warning">{automaticBackupStatus.warning}</small>
+          )}
           <button className="ghost" onClick={() => void chooseBackupFolder()}>
             <FolderOpen size={17} />
             {backupFolder ? "Cambiar carpeta" : "Seleccionar carpeta"}
@@ -4291,6 +4458,14 @@ function SettingsView() {
           <p>Incluye base de datos y archivos originales de tickets.</p>
           <button className="primary" onClick={exportData}>
             <FileDown size={17} /> Exportar JSON
+          </button>
+          <button
+            className="ghost"
+            type="button"
+            disabled={!automaticBackup}
+            onClick={() => void restoreAutomaticBackup()}
+          >
+            <Database size={17} /> Restaurar último autoguardado
           </button>
         </div>
         <div className="panel setting-card">
@@ -4443,6 +4618,8 @@ type LocalFileHandle = {
 type LocalDirectoryHandle = {
   name: string;
   getFileHandle(name: string, options: { create: boolean }): Promise<LocalFileHandle>;
+  queryPermission?(options: { mode: "readwrite" }): Promise<PermissionState>;
+  requestPermission?(options: { mode: "readwrite" }): Promise<PermissionState>;
 };
 
 type DirectoryPickerWindow = Window & {

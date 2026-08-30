@@ -8,6 +8,12 @@ import type {
   Ticket,
 } from "./types";
 
+export type AppSetting = {
+  key: string;
+  value: unknown;
+  updatedAt: string;
+};
+
 class SmartMarketDB extends Dexie {
   supermarkets!: Table<Supermarket, number>;
   tickets!: Table<Ticket, number>;
@@ -15,6 +21,7 @@ class SmartMarketDB extends Dexie {
   purchases!: Table<Purchase, number>;
   equivalences!: Table<Equivalence, number>;
   shoppingList!: Table<ShoppingListItem, number>;
+  appSettings!: Table<AppSetting, string>;
 
   constructor() {
     super("smartmarket-local-db");
@@ -32,6 +39,9 @@ class SmartMarketDB extends Dexie {
     });
     this.version(4).stores({
       shoppingList: "++id, productId, checked, createdAt",
+    });
+    this.version(5).stores({
+      appSettings: "&key, updatedAt",
     });
   }
 }
