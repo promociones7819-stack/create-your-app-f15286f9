@@ -7,7 +7,7 @@ const App = lazy(() => import("../smartmarket/App"));
 
 const title = "SmartMarket Local — Compara precios de supermercado";
 const description =
-  "Guarda tus tickets, normaliza precios a €/kg, €/L o unidad y compara marcas entre supermercados. Todo se queda en tu dispositivo.";
+  "Guarda tus productos y precios, compara por €/kg, €/L o unidad y detecta cambios entre supermercados. Todo se queda en tu dispositivo.";
 
 export const Route = createFileRoute("/")({
   head: () => ({
