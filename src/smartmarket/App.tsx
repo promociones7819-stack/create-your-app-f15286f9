@@ -1250,6 +1250,7 @@ function ProductsView() {
   const products = useLiveQuery(() => db.products.orderBy("genericName").toArray(), []) ?? [];
   const purchases = useLiveQuery(() => db.purchases.toArray(), []) ?? [];
   const supermarkets = useLiveQuery(() => db.supermarkets.toArray(), []) ?? [];
+  const [catalogUser, setCatalogUser] = useState<User | null>(null);
   const [query, setQuery] = useState("");
   const [showNewProduct, setShowNewProduct] = useState(false);
   const [newName, setNewName] = useState("");
@@ -1258,9 +1259,19 @@ function ProductsView() {
   const [newCategory, setNewCategory] = useState<string>(PRODUCT_CATEGORIES[5]);
   const [newPurchaseUrl, setNewPurchaseUrl] = useState("");
   const [productError, setProductError] = useState("");
+  const isCatalogAdmin =
+    catalogUser?.email?.toLocaleLowerCase("es-ES") === PUBLIC_CATALOG_ADMIN_EMAIL;
   const filtered = products.filter((p) =>
     `${p.name} ${p.brand} ${p.genericName}`.toLowerCase().includes(query.toLowerCase()),
   );
+
+  useEffect(() => {
+    void supabase.auth.getUser().then(({ data }) => setCatalogUser(data.user));
+    const { data } = supabase.auth.onAuthStateChange((_event, session) =>
+      setCatalogUser(session?.user ?? null),
+    );
+    return () => data.subscription.unsubscribe();
+  }, []);
 
   async function setRating(product: Product, rating: number) {
     if (product.id) await db.products.update(product.id, { rating });
@@ -1299,6 +1310,7 @@ function ProductsView() {
     }
   }
   async function updatePurchaseUrl(product: Product, value: string) {
+    if (!isCatalogAdmin) return;
     if (!product.id) return;
     const purchaseUrl = cleanPurchaseUrl(value);
     if (!isValidPurchaseUrl(purchaseUrl)) {
@@ -1309,6 +1321,8 @@ function ProductsView() {
   }
   async function createProduct() {
     setProductError("");
+    if (!isCatalogAdmin)
+      return setProductError("Solo el administrador puede crear productos manuales.");
     const name = newName.trim();
     const brand = newBrand.trim();
     const genericName = newGenericName.trim() || name;
@@ -1378,12 +1392,18 @@ function ProductsView() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <button className="primary" type="button" onClick={() => setShowNewProduct((open) => !open)}>
-            <Plus size={17} /> {showNewProduct ? "Cerrar" : "Nuevo producto manual"}
-          </button>
+          {isCatalogAdmin && (
+            <button
+              className="primary"
+              type="button"
+              onClick={() => setShowNewProduct((open) => !open)}
+            >
+              <Plus size={17} /> {showNewProduct ? "Cerrar" : "Nuevo producto manual"}
+            </button>
+          )}
         </div>
       </div>
-      {showNewProduct && (
+      {isCatalogAdmin && showNewProduct && (
         <div className="panel new-product-panel">
           <div>
             <span className="eyebrow">ALTA MANUAL</span>
@@ -1433,7 +1453,13 @@ function ProductsView() {
       )}
       {filtered.length === 0 ? (
         <div className="panel">
-          <Empty text="Crea un producto manualmente o añade un ticket para construir tu catálogo." />
+          <Empty
+            text={
+              isCatalogAdmin
+                ? "Crea un producto manualmente o añade un ticket para construir tu catálogo."
+                : "Añade un ticket o incorpora productos del catálogo público para construir tu catálogo."
+            }
+          />
         </div>
       ) : (
         <div className="product-list">
@@ -1557,17 +1583,19 @@ function ProductsView() {
                   </strong>
                 </div>
                 <div className="product-purchase-link">
-                  <label className="inline-field">
-                    Enlace de afiliado o compra
-                    <input
-                      type="url"
-                      defaultValue={product.purchaseUrl ?? ""}
-                      key={`${product.id}-${product.purchaseUrl ?? ""}`}
-                      placeholder="Pegar enlace…"
-                      onBlur={(event) => void updatePurchaseUrl(product, event.target.value)}
-                    />
-                    <small>Se guarda al salir del campo.</small>
-                  </label>
+                  {isCatalogAdmin && (
+                    <label className="inline-field">
+                      Enlace de afiliado o compra
+                      <input
+                        type="url"
+                        defaultValue={product.purchaseUrl ?? ""}
+                        key={`${product.id}-${product.purchaseUrl ?? ""}`}
+                        placeholder="Pegar enlace…"
+                        onBlur={(event) => void updatePurchaseUrl(product, event.target.value)}
+                      />
+                      <small>Se guarda al salir del campo.</small>
+                    </label>
+                  )}
                   {product.purchaseUrl && (
                     <a
                       className="buy-link"
@@ -1589,7 +1617,9 @@ function ProductsView() {
         </div>
       )}
       <p className="affiliate-note">
-        Los botones de compra abren una tienda externa. Algunos enlaces pueden ser de afiliado.
+        {isCatalogAdmin
+          ? "Como administrador puedes crear productos manuales y editar sus enlaces de afiliado."
+          : "Los productos manuales y sus enlaces de compra solo puede gestionarlos el administrador."}
       </p>
     </section>
   );

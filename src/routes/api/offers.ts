@@ -54,9 +54,7 @@ const SEARCH_AREA = {
 const EROSKI_SEARCH = "https://supermercado.eroski.es/es/search/results/";
 const MERCADONA_API = "https://tienda.mercadona.es/api/categories/";
 const MERCADONA_CACHE_MS = 30 * 60 * 1000;
-let mercadonaCategoryCache:
-  | { expiresAt: number; categories: MercadonaCategory[] }
-  | undefined;
+let mercadonaCategoryCache: { expiresAt: number; categories: MercadonaCategory[] } | undefined;
 const mercadonaProductCache = new Map<
   number,
   { expiresAt: number; products: MercadonaProduct[] }
@@ -157,13 +155,19 @@ async function searchMercadona(query: string) {
     }))
     .sort((a, b) => b.score - a.score);
   const categoryIds = ranked[0]?.score
-    ? ranked.filter((entry) => entry.score === ranked[0]!.score).slice(0, 4).map((entry) => entry.category.id)
+    ? ranked
+        .filter((entry) => entry.score === ranked[0]!.score)
+        .slice(0, 4)
+        .map((entry) => entry.category.id)
     : [];
   if (!categoryIds.length) return [];
   const productGroups = await Promise.all(categoryIds.map((id) => getMercadonaProducts(id)));
   const candidates = productGroups.flat().filter((product) => {
     const nameWords = normalizedWords(product.display_name ?? "");
-    return words.length > 0 && words.every((word) => nameWords.some((nameWord) => nameWord.includes(word)));
+    return (
+      words.length > 0 &&
+      words.every((word) => nameWords.some((nameWord) => nameWord.includes(word)))
+    );
   });
 
   return candidates
@@ -172,26 +176,29 @@ async function searchMercadona(query: string) {
       const price = Number(instructions?.unit_price);
       const comparablePrice = Number(instructions?.reference_price);
       const referenceUnit = instructions?.reference_format?.toLocaleLowerCase("es-ES");
-      const comparableUnit = referenceUnit === "kg" || referenceUnit === "l" || referenceUnit === "ud"
-        ? referenceUnit
-        : null;
+      const comparableUnit =
+        referenceUnit === "kg" || referenceUnit === "l" || referenceUnit === "ud"
+          ? referenceUnit
+          : null;
       if (!product.display_name || !product.share_url || !Number.isFinite(price) || price <= 0)
         return [];
-      return [{
-        name: product.display_name,
-        supermarket: "Mercadona",
-        price,
-        url: product.share_url,
-        location: "Precio publicado en la tienda online de Mercadona",
-        onlinePrice: true,
-        comparablePrice:
-          Number.isFinite(comparablePrice) && comparablePrice > 0 ? comparablePrice : null,
-        comparableUnit,
-        format: mercadonaFormat(product),
-        promotion: instructions?.price_decreased
-          ? `Precio bajado${instructions.previous_unit_price ? ` desde ${instructions.previous_unit_price} €` : ""}`
-          : undefined,
-      }];
+      return [
+        {
+          name: product.display_name,
+          supermarket: "Mercadona",
+          price,
+          url: product.share_url,
+          location: "Precio publicado en la tienda online de Mercadona",
+          onlinePrice: true,
+          comparablePrice:
+            Number.isFinite(comparablePrice) && comparablePrice > 0 ? comparablePrice : null,
+          comparableUnit,
+          format: mercadonaFormat(product),
+          promotion: instructions?.price_decreased
+            ? `Precio bajado${instructions.previous_unit_price ? ` desde ${instructions.previous_unit_price} €` : ""}`
+            : undefined,
+        },
+      ];
     })
     .sort(
       (a, b) =>
@@ -203,7 +210,8 @@ async function searchMercadona(query: string) {
 
 function comparablePriceFromName(name: string, price: number) {
   const normalized = name.toLocaleLowerCase("es-ES").replace(/,/g, ".");
-  const unitPattern = "kg|kilos?|g|gramos?|l|litros?|ml|mililitros?|cl|centilitros?|uds?|unidades?";
+  const unitPattern =
+    "kg|kilos?|g|gramos?|l|litros?|ml|mililitros?|cl|centilitros?|uds?|unidades?|cápsulas?|capsulas?|monodosis";
   const multipack = normalized.match(
     new RegExp(`(\\d+)\\s*(?:x|×)\\s*(\\d+(?:\\.\\d+)?)\\s*(${unitPattern})\\b`),
   );
@@ -257,34 +265,83 @@ function comparablePriceFromName(name: string, price: number) {
 }
 
 function parseEroskiOffers(html: string): PublicOffer[] {
-  const pattern =
-    /data-metrics="\{&quot;event&quot;:&quot;select_item&quot;.*?&quot;price&quot;:([0-9.]+).*?&quot;item_name&quot;:&quot;([^&]*?)&quot;.*?href="([^"]*productdetail[^"]*)"/g;
   const seen = new Set<string>();
   const offers: PublicOffer[] = [];
-  let match: RegExpExecArray | null;
+  const productUrls = new Map<string, string>();
+  const productUrlPattern =
+    /https:\/\/supermercado\.eroski\.es(?::443)?\/es\/productdetail\/(\d+)-[^"\\\s<]+/g;
+  let urlMatch: RegExpExecArray | null;
 
-  while ((match = pattern.exec(html)) && offers.length < 8) {
-    const name = decodeHtml(match[2] ?? "").trim();
-    const price = Number(match[1]);
-    const rawUrl = match[3] ?? "";
-    if (!name || !Number.isFinite(price) || price <= 0 || seen.has(name)) continue;
-    seen.add(name);
+  while ((urlMatch = productUrlPattern.exec(html))) {
+    productUrls.set(
+      urlMatch[1] ?? "",
+      (urlMatch[0] ?? "").replace(
+        "https://supermercado.eroski.es:443",
+        "https://supermercado.eroski.es",
+      ),
+    );
+  }
+
+  function addOffer(name: string, price: number, url: string) {
+    const key = name.toLocaleLowerCase("es-ES");
+    if (!name || !Number.isFinite(price) || price <= 0 || seen.has(key)) return;
+    seen.add(key);
     offers.push({
       name,
       supermarket: "EROSKI",
       price,
-      url: rawUrl.replace("https://supermercado.eroski.es:443", "https://supermercado.eroski.es"),
+      url,
       location: "Catálogo online para el área de Bizkaia",
       onlinePrice: true,
       ...comparablePriceFromName(name, price),
     });
   }
 
-  return offers.sort(
-    (a, b) =>
-      (a.comparablePrice ?? Number.POSITIVE_INFINITY) -
-        (b.comparablePrice ?? Number.POSITIVE_INFINITY) || a.price - b.price,
-  );
+  // El catálogo actual incluye los artículos en un bloque JSON de analítica
+  // cuyas comillas aparecen escapadas dentro del HTML.
+  const trackingPattern =
+    /\{\\"price\\":([0-9.]+),\\"index\\":\d+,\\"quantity\\":[0-9.]+,\\"item_name\\":\\"((?:\\\\.|[^"\\])*)\\",\\"item_id\\":\\"(\d+)\\"[^}]*?\\"item_affiliation\\":\\"Eroski\\"\}/g;
+  let trackingMatch: RegExpExecArray | null;
+
+  while ((trackingMatch = trackingPattern.exec(html))) {
+    let name = trackingMatch[2] ?? "";
+    try {
+      name = JSON.parse(`"${name}"`) as string;
+    } catch {
+      name = name.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    }
+    const fallback = new URL(EROSKI_SEARCH);
+    fallback.searchParams.set("q", name);
+    addOffer(
+      decodeHtml(name).trim(),
+      Number(trackingMatch[1]),
+      productUrls.get(trackingMatch[3] ?? "") ?? fallback.toString(),
+    );
+  }
+
+  // Compatibilidad con el marcado que usaba anteriormente Eroski.
+  const legacyPattern =
+    /data-metrics="\{&quot;event&quot;:&quot;select_item&quot;.*?&quot;price&quot;:([0-9.]+).*?&quot;item_name&quot;:&quot;([^&]*?)&quot;.*?href="([^"]*productdetail[^"]*)"/g;
+  let legacyMatch: RegExpExecArray | null;
+
+  while ((legacyMatch = legacyPattern.exec(html))) {
+    addOffer(
+      decodeHtml(legacyMatch[2] ?? "").trim(),
+      Number(legacyMatch[1]),
+      (legacyMatch[3] ?? "").replace(
+        "https://supermercado.eroski.es:443",
+        "https://supermercado.eroski.es",
+      ),
+    );
+  }
+
+  return offers
+    .sort(
+      (a, b) =>
+        (a.comparablePrice ?? Number.POSITIVE_INFINITY) -
+          (b.comparablePrice ?? Number.POSITIVE_INFINITY) || a.price - b.price,
+    )
+    .slice(0, 8);
 }
 
 async function searchEroski(query: string) {
@@ -313,17 +370,23 @@ export const Route = createFileRoute("/api/offers")({
       GET: async ({ request }) => {
         const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
         if (query.length < 2 || query.length > 80) {
-          return Response.json({ error: "El producto debe tener entre 2 y 80 caracteres." }, { status: 400 });
+          return Response.json(
+            { error: "El producto debe tener entre 2 y 80 caracteres." },
+            { status: 400 },
+          );
         }
 
-        let offers: PublicOffer[] = [];
+        const offers: PublicOffer[] = [];
         const warnings: string[] = [];
         const [eroskiResult, mercadonaResult] = await Promise.allSettled([
           searchEroski(query),
           searchMercadona(query),
         ]);
-        if (eroskiResult.status === "fulfilled") offers.push(...eroskiResult.value);
-        else warnings.push("EROSKI no ha respondido en esta consulta.");
+        if (eroskiResult.status === "fulfilled") {
+          offers.push(...eroskiResult.value);
+          if (!eroskiResult.value.length)
+            warnings.push("EROSKI no ha encontrado coincidencias para esta búsqueda.");
+        } else warnings.push("EROSKI no ha respondido en esta consulta.");
         if (mercadonaResult.status === "fulfilled") offers.push(...mercadonaResult.value);
         else warnings.push("Mercadona no ha respondido en esta consulta.");
         offers.sort(
@@ -341,6 +404,11 @@ export const Route = createFileRoute("/api/offers")({
             offers,
             warnings,
             sources: [
+              {
+                supermarket: "EROSKI",
+                label: "Buscar directamente en Eroski",
+                url: `${EROSKI_SEARCH}?q=${encodeURIComponent(query)}`,
+              },
               {
                 supermarket: "Carrefour Express Getxo",
                 label: "Ver ofertas de la tienda",
