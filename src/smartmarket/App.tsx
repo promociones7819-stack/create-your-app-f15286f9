@@ -6,6 +6,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
+  Check,
   CircleHelp,
   Database,
   FileDown,
@@ -15,6 +16,7 @@ import {
   History,
   Home,
   ImagePlus,
+  Inbox,
   ListChecks,
   Mail,
   ExternalLink,
@@ -25,6 +27,7 @@ import {
   ReceiptText,
   Save,
   Scale,
+  Send,
   Settings,
   Share2,
   ShieldCheck,
@@ -155,6 +158,25 @@ type PublicCatalogProduct = {
   rating: number;
   notes: string;
   updated_at: string;
+};
+
+type ProductSubmission = {
+  id: string;
+  batch_id: string;
+  source_product_id: number;
+  sender_name: string;
+  sender_email: string;
+  name: string;
+  brand: string;
+  generic_name: string;
+  category: string;
+  purchase_url: string | null;
+  rating: number;
+  notes: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
 };
 
 const PRODUCT_CATEGORIES = [
@@ -1591,6 +1613,18 @@ function publicProductForMatching(product: PublicCatalogProduct): ImportedProduc
   };
 }
 
+function submissionForMatching(product: ProductSubmission): ImportedProduct {
+  return {
+    name: product.name,
+    brand: product.brand,
+    genericName: product.generic_name,
+    category: product.category,
+    rating: product.rating,
+    notes: product.notes,
+    purchaseUrl: product.purchase_url ?? undefined,
+  };
+}
+
 function PublicCatalogView() {
   const localProductRecords = useLiveQuery(() => db.products.toArray(), []);
   const localProducts = useMemo(() => localProductRecords ?? [], [localProductRecords]);
@@ -1600,6 +1634,12 @@ function PublicCatalogView() {
   const [password, setPassword] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  const [submissions, setSubmissions] = useState<ProductSubmission[]>([]);
+  const [showSubmissionForm, setShowSubmissionForm] = useState(false);
+  const [selectedForSubmission, setSelectedForSubmission] = useState<number[]>([]);
+  const [senderName, setSenderName] = useState("");
+  const [senderEmail, setSenderEmail] = useState("");
+  const [submittingProducts, setSubmittingProducts] = useState(false);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
   const isCatalogAdmin = user?.email?.toLocaleLowerCase("es-ES") === PUBLIC_CATALOG_ADMIN_EMAIL;
@@ -1615,12 +1655,31 @@ function PublicCatalogView() {
     setLoading(false);
   }
 
+  async function loadSubmissions() {
+    const { data, error } = await supabase
+      .from("product_submissions")
+      .select("*")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true });
+    if (error) {
+      if (error.code === "42P01" || error.code === "PGRST205")
+        setStatus("La bandeja de productos enviados necesita activarse una sola vez en Supabase.");
+      else setStatus(`No se pudieron cargar los envíos: ${error.message}`);
+      setSubmissions([]);
+    } else setSubmissions((data ?? []) as ProductSubmission[]);
+  }
+
   useEffect(() => {
     void supabase.auth.getUser().then(({ data }) => setUser(data.user));
     void loadPublicProducts();
     const { data } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (isCatalogAdmin) void loadSubmissions();
+    else setSubmissions([]);
+  }, [isCatalogAdmin]);
 
   const matches = useMemo(() => {
     const result: Record<string, "exact" | "similar"> = {};
@@ -1643,6 +1702,160 @@ function PublicCatalogView() {
       .toLocaleLowerCase("es-ES")
       .includes(query.toLocaleLowerCase("es-ES")),
   );
+
+  const localPublicationMatches = useMemo(() => {
+    const result: Record<number, "exact" | "similar"> = {};
+    localProducts.forEach((local) => {
+      if (!local.id) return;
+      if (products.some((product) => productsMatchExactly(local, publicProductForMatching(product))))
+        result[local.id] = "exact";
+      else if (products.some((product) => productsLookSimilar(local, publicProductForMatching(product))))
+        result[local.id] = "similar";
+    });
+    return result;
+  }, [localProducts, products]);
+
+  const submissionMatches = useMemo(() => {
+    const result: Record<string, "exact" | "similar"> = {};
+    submissions.forEach((submission) => {
+      const incoming = submissionForMatching(submission);
+      const exactPublic = products.some((product) =>
+        productsMatchExactly(publicProductForMatching(product), incoming),
+      );
+      const exactLocal = localProducts.some((product) => productsMatchExactly(product, incoming));
+      if (exactPublic || exactLocal) result[submission.id] = "exact";
+      else {
+        const similarPublic = products.some((product) =>
+          productsLookSimilar(publicProductForMatching(product), incoming),
+        );
+        const similarLocal = localProducts.some((product) => productsLookSimilar(product, incoming));
+        if (similarPublic || similarLocal) result[submission.id] = "similar";
+      }
+    });
+    return result;
+  }, [localProducts, products, submissions]);
+
+  function openSubmissionForm() {
+    setSelectedForSubmission(
+      localProducts.flatMap((product) =>
+        product.id && !localPublicationMatches[product.id] ? [product.id] : [],
+      ),
+    );
+    setShowSubmissionForm(true);
+    setStatus("");
+  }
+
+  function toggleSubmissionProduct(productId: number) {
+    setSelectedForSubmission((current) =>
+      current.includes(productId)
+        ? current.filter((id) => id !== productId)
+        : [...current, productId],
+    );
+  }
+
+  async function sendProductsForReview() {
+    const chosen = localProducts.filter(
+      (product): product is Product & { id: number } =>
+        Boolean(product.id && selectedForSubmission.includes(product.id)),
+    );
+    if (!chosen.length) return setStatus("Selecciona al menos un producto para enviarlo.");
+    if (chosen.length > 25)
+      return setStatus("Puedes enviar un máximo de 25 productos cada vez.");
+    const cleanEmail = senderEmail.trim();
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail))
+      return setStatus("Revisa el correo de contacto o déjalo vacío.");
+
+    setSubmittingProducts(true);
+    const batchId = crypto.randomUUID();
+    const rows = chosen.map((product) => ({
+      batch_id: batchId,
+      source_product_id: product.id,
+      sender_name: senderName.trim().slice(0, 100),
+      sender_email: cleanEmail.slice(0, 180),
+      name: product.name.slice(0, 180),
+      brand: product.brand.slice(0, 180),
+      generic_name: product.genericName.slice(0, 180),
+      category: product.category.slice(0, 100),
+      purchase_url: product.purchaseUrl || null,
+      rating: product.rating,
+      notes: product.notes.slice(0, 1000),
+    }));
+    const { error } = await supabase.from("product_submissions").insert(rows);
+    setSubmittingProducts(false);
+    if (error) {
+      if (error.code === "42P01" || error.code === "PGRST205")
+        setStatus("La bandeja de envíos todavía no está activada por el administrador.");
+      else setStatus(`No se pudieron enviar los productos: ${error.message}`);
+      return;
+    }
+    setShowSubmissionForm(false);
+    setSelectedForSubmission([]);
+    setStatus(`${rows.length} productos enviados. El administrador los revisará antes de publicarlos.`);
+  }
+
+  async function resolveSubmission(
+    submission: ProductSubmission,
+    decision: "approved" | "rejected",
+  ) {
+    if (!user || !isCatalogAdmin) return;
+    if (decision === "rejected") {
+      if (!confirm(`¿Rechazar la propuesta “${submission.name}”?`)) return;
+    } else if (
+      submissionMatches[submission.id] === "similar" &&
+      !confirm(`“${submission.name}” parece similar a un producto existente. ¿Publicarlo igualmente?`)
+    )
+      return;
+
+    const incoming = submissionForMatching(submission);
+    const alreadyPublic = products.some((product) =>
+      productsMatchExactly(publicProductForMatching(product), incoming),
+    );
+    if (decision === "approved" && !alreadyPublic) {
+      const exactLocal = localProducts.find((product) => productsMatchExactly(product, incoming));
+      const productId =
+        exactLocal?.id ??
+        (await db.products.add({
+          name: incoming.name,
+          brand: incoming.brand,
+          genericName: incoming.genericName || incoming.name,
+          category: incoming.category || "Otros",
+          rating: incoming.rating,
+          notes: incoming.notes,
+          purchaseUrl: incoming.purchaseUrl,
+        }));
+      const { error: publishError } = await supabase.from("public_products").upsert(
+        {
+          owner_id: user.id,
+          source_product_id: productId,
+          name: incoming.name,
+          brand: incoming.brand,
+          generic_name: incoming.genericName,
+          category: incoming.category,
+          purchase_url: incoming.purchaseUrl || null,
+          rating: incoming.rating,
+          notes: incoming.notes,
+        },
+        { onConflict: "owner_id,source_product_id" },
+      );
+      if (publishError) return setStatus(`No se pudo aprobar: ${publishError.message}`);
+    }
+
+    const { error } = await supabase
+      .from("product_submissions")
+      .update({
+        status: decision,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: user.id,
+      })
+      .eq("id", submission.id);
+    if (error) return setStatus(`No se pudo completar la revisión: ${error.message}`);
+    setStatus(
+      decision === "approved"
+        ? `“${submission.name}” ha sido aprobado y ya aparece en el catálogo.`
+        : `“${submission.name}” ha sido rechazado.`,
+    );
+    await Promise.all([loadPublicProducts(), loadSubmissions()]);
+  }
 
   async function signIn() {
     setStatus("");
@@ -1780,6 +1993,174 @@ function PublicCatalogView() {
       </div>
 
       {status && <div className="catalog-status">{status}</div>}
+
+      {!isCatalogAdmin && (
+        <div className="panel contribution-panel">
+          <div className="contribution-heading">
+            <div className="contribution-icon"><Send size={21} /></div>
+            <div>
+              <strong>Comparte tus productos con la comunidad</strong>
+              <span>
+                Elige productos de tu catálogo y envíalos al administrador. No se comparten
+                tickets, listas de la compra ni precios privados.
+              </span>
+            </div>
+          </div>
+          {!showSubmissionForm ? (
+            <button
+              className="primary"
+              type="button"
+              disabled={!localProducts.length}
+              onClick={openSubmissionForm}
+            >
+              <Send size={16} /> Enviar productos para revisión
+            </button>
+          ) : (
+            <div className="contribution-form">
+              <div className="contribution-contact-fields">
+                <label>
+                  Tu nombre (opcional)
+                  <input
+                    value={senderName}
+                    maxLength={100}
+                    onChange={(event) => setSenderName(event.target.value)}
+                    placeholder="Nombre"
+                  />
+                </label>
+                <label>
+                  Tu correo (opcional)
+                  <input
+                    type="email"
+                    value={senderEmail}
+                    maxLength={180}
+                    onChange={(event) => setSenderEmail(event.target.value)}
+                    placeholder="correo@ejemplo.com"
+                  />
+                </label>
+              </div>
+              <div className="contribution-selection-head">
+                <strong>{selectedForSubmission.length} seleccionados</strong>
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() =>
+                    setSelectedForSubmission(
+                      localProducts.flatMap((product) =>
+                        product.id && !localPublicationMatches[product.id] ? [product.id] : [],
+                      ),
+                    )
+                  }
+                >
+                  Seleccionar no publicados
+                </button>
+              </div>
+              <div className="contribution-product-list">
+                {localProducts.map((product) => {
+                  if (!product.id) return null;
+                  const match = localPublicationMatches[product.id];
+                  return (
+                    <label
+                      className={
+                        selectedForSubmission.includes(product.id)
+                          ? "contribution-product selected"
+                          : "contribution-product"
+                      }
+                      key={product.id}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedForSubmission.includes(product.id)}
+                        disabled={match === "exact"}
+                        onChange={() => toggleSubmissionProduct(product.id!)}
+                      />
+                      <span>
+                        <strong>{product.name}</strong>
+                        <small>{product.brand || "Sin marca"} · {product.category}</small>
+                      </span>
+                      {match === "exact" ? (
+                        <em>YA PUBLICADO</em>
+                      ) : match === "similar" ? (
+                        <em className="similar">SIMILAR</em>
+                      ) : (
+                        <em className="new">NUEVO</em>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="contribution-actions">
+                <button className="ghost" type="button" onClick={() => setShowSubmissionForm(false)}>
+                  Cancelar
+                </button>
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={!selectedForSubmission.length || submittingProducts}
+                  onClick={() => void sendProductsForReview()}
+                >
+                  <Send size={16} />
+                  {submittingProducts ? "Enviando…" : "Enviar al administrador"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isCatalogAdmin && (
+        <div className="panel moderation-panel">
+          <div className="moderation-heading">
+            <div>
+              <span className="eyebrow">BANDEJA DEL ADMINISTRADOR</span>
+              <h3><Inbox size={20} /> Productos pendientes de validar</h3>
+            </div>
+            <strong>{submissions.length}</strong>
+          </div>
+          {submissions.length === 0 ? (
+            <p className="moderation-empty">No hay propuestas pendientes.</p>
+          ) : (
+            <div className="moderation-list">
+              {submissions.map((submission) => {
+                const match = submissionMatches[submission.id];
+                const sender = submission.sender_name || submission.sender_email || "Usuario anónimo";
+                return (
+                  <article className="moderation-product" key={submission.id}>
+                    <div className="moderation-product-main">
+                      <span className="eyebrow">{submission.category}</span>
+                      <strong>{submission.name}</strong>
+                      <small>
+                        {submission.brand || "Sin marca"} · Enviado por {sender} · {new Date(submission.created_at).toLocaleDateString("es-ES")}
+                      </small>
+                    </div>
+                    <div className="moderation-product-flags">
+                      {match === "exact" ? (
+                        <em>POSIBLE DUPLICADO</em>
+                      ) : match === "similar" ? (
+                        <em className="similar">PRODUCTO SIMILAR</em>
+                      ) : (
+                        <em className="new">NUEVO</em>
+                      )}
+                      {submission.purchase_url && (
+                        <a href={submission.purchase_url} target="_blank" rel="noopener noreferrer sponsored">
+                          Revisar enlace <ExternalLink size={13} />
+                        </a>
+                      )}
+                    </div>
+                    <div className="moderation-actions">
+                      <button className="ghost danger" type="button" onClick={() => void resolveSubmission(submission, "rejected")}>
+                        <X size={15} /> Rechazar
+                      </button>
+                      <button className="primary" type="button" onClick={() => void resolveSubmission(submission, "approved")}>
+                        <Check size={15} /> Aprobar y publicar
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="public-catalog-tools">
         <span>{filtered.length} productos · {selected.length} seleccionados</span>
@@ -3429,7 +3810,7 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
       view: "public-catalog",
       title: "Catálogo público",
       description:
-        "Cualquiera puede ver e incorporar los productos publicados. Solo el administrador puede publicarlos o retirarlos.",
+        "Cualquiera puede ver, incorporar o enviar productos para revisión. Solo el administrador puede aprobarlos o retirarlos.",
       icon: Globe2,
     },
     {

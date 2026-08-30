@@ -9,6 +9,10 @@ La aplicación está configurada para el proyecto Supabase `SmartMarket`.
 4. Pégalo en el editor y pulsa **Run**.
 5. Vuelve a SmartMarket y abre **Catálogo público**.
 
+Para activar la bandeja donde los usuarios envían productos para revisión, ejecuta después el
+contenido de `supabase/migrations/20260830090000_product_submissions.sql` en una consulta nueva.
+Los visitantes solo pueden enviar propuestas: no pueden leer la bandeja ni aprobar productos.
+
 La migración crea la tabla y activa Row Level Security. Cualquier visitante puede leer el catálogo,
 pero solo la cuenta `promociones7819@gmail.com` puede publicar, modificar o retirar productos.
 

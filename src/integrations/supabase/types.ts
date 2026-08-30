@@ -14,6 +14,63 @@ export type Database = {
   }
   public: {
     Tables: {
+      product_submissions: {
+        Row: {
+          batch_id: string
+          brand: string
+          category: string
+          created_at: string
+          generic_name: string
+          id: string
+          name: string
+          notes: string
+          purchase_url: string | null
+          rating: number
+          reviewed_at: string | null
+          reviewed_by: string | null
+          sender_email: string
+          sender_name: string
+          source_product_id: number
+          status: string
+        }
+        Insert: {
+          batch_id: string
+          brand?: string
+          category?: string
+          created_at?: string
+          generic_name?: string
+          id?: string
+          name: string
+          notes?: string
+          purchase_url?: string | null
+          rating?: number
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          sender_email?: string
+          sender_name?: string
+          source_product_id: number
+          status?: string
+        }
+        Update: {
+          batch_id?: string
+          brand?: string
+          category?: string
+          created_at?: string
+          generic_name?: string
+          id?: string
+          name?: string
+          notes?: string
+          purchase_url?: string | null
+          rating?: number
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          sender_email?: string
+          sender_name?: string
+          source_product_id?: number
+          status?: string
+        }
+        Relationships: []
+      }
       public_products: {
         Row: {
           brand: string
