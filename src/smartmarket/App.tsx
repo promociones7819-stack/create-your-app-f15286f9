@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useLiveQuery } from "dexie-react-hooks";
 import type { User } from "@supabase/supabase-js";
 import {
@@ -165,6 +166,7 @@ type PublicCatalogProduct = {
   generic_name: string;
   category: string;
   purchase_url: string | null;
+  photo_data_url: string | null;
   rating: number;
   notes: string;
   updated_at: string;
@@ -181,6 +183,7 @@ type ProductSubmission = {
   generic_name: string;
   category: string;
   purchase_url: string | null;
+  photo_data_url: string | null;
   rating: number;
   notes: string;
   status: "pending" | "approved" | "rejected";
@@ -361,6 +364,12 @@ function App() {
       </main>
     </div>
   );
+}
+
+function ModalPortal({ children }: { children: ReactNode }) {
+  const [container, setContainer] = useState<HTMLElement | null>(null);
+  useEffect(() => setContainer(document.body), []);
+  return container ? createPortal(children, container) : null;
 }
 
 function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) {
@@ -873,13 +882,14 @@ function TicketEditor({
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={ticketId ? "Editar ticket" : "Nuevo ticket"}
-      >
+    <ModalPortal>
+      <div className="modal-backdrop" role="presentation">
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={ticketId ? "Editar ticket" : "Nuevo ticket"}
+        >
         <div className="modal-head">
           <div>
             <span className="eyebrow">{ticketId ? "EDITAR" : "NUEVO"}</span>
@@ -1110,8 +1120,9 @@ function TicketEditor({
             </button>
           </div>
         </div>
+        </div>
       </div>
-    </div>
+    </ModalPortal>
   );
 }
 
@@ -1677,6 +1688,33 @@ function ProductPhoto({ blob, alt }: { blob: Blob; alt: string }) {
   return <img className="product-photo" src={url} alt={alt} />;
 }
 
+function importedPhotoFields(
+  dataUrl: string | null | undefined,
+  name: string,
+): Pick<Product, "photoName" | "photoType" | "photoBlob"> | undefined {
+  if (!dataUrl?.startsWith("data:image/")) return undefined;
+  try {
+    const photoBlob = dataUrlToBlob(dataUrl);
+    return {
+      photoName: `${name || "producto"}.webp`,
+      photoType: photoBlob.type,
+      photoBlob,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function publicPhotoDataUrl(product: Product) {
+  if (!product.photoBlob) return null;
+  const value = await blobToDataUrl(product.photoBlob);
+  return value.length <= 700_000 ? value : null;
+}
+
+function missingPublicPhotoColumn(error: { message?: string }) {
+  return error.message?.includes("photo_data_url") ?? false;
+}
+
 function publicProductForMatching(product: PublicCatalogProduct): ImportedProduct {
   return {
     name: product.name,
@@ -1686,6 +1724,7 @@ function publicProductForMatching(product: PublicCatalogProduct): ImportedProduc
     rating: product.rating,
     notes: product.notes,
     purchaseUrl: product.purchase_url ?? undefined,
+    ...importedPhotoFields(product.photo_data_url, product.name),
   };
 }
 
@@ -1698,6 +1737,7 @@ function submissionForMatching(product: ProductSubmission): ImportedProduct {
     rating: product.rating,
     notes: product.notes,
     purchaseUrl: product.purchase_url ?? undefined,
+    ...importedPhotoFields(product.photo_data_url, product.name),
   };
 }
 
@@ -1843,24 +1883,29 @@ function PublicCatalogView() {
 
     setSubmittingProducts(true);
     const batchId = crypto.randomUUID();
-    const rows = chosen.map((product) => ({
-      batch_id: batchId,
-      source_product_id: product.id,
-      sender_name: senderName.trim().slice(0, 100),
-      sender_email: cleanEmail.slice(0, 180),
-      name: product.name.slice(0, 180),
-      brand: product.brand.slice(0, 180),
-      generic_name: product.genericName.slice(0, 180),
-      category: product.category.slice(0, 100),
-      purchase_url: product.purchaseUrl || null,
-      rating: product.rating,
-      notes: product.notes.slice(0, 1000),
-    }));
+    const rows = await Promise.all(
+      chosen.map(async (product) => ({
+        batch_id: batchId,
+        source_product_id: product.id,
+        sender_name: senderName.trim().slice(0, 100),
+        sender_email: cleanEmail.slice(0, 180),
+        name: product.name.slice(0, 180),
+        brand: product.brand.slice(0, 180),
+        generic_name: product.genericName.slice(0, 180),
+        category: product.category.slice(0, 100),
+        purchase_url: product.purchaseUrl || null,
+        photo_data_url: await publicPhotoDataUrl(product),
+        rating: product.rating,
+        notes: product.notes.slice(0, 1000),
+      })),
+    );
     const { error } = await supabase.from("product_submissions").insert(rows);
     setSubmittingProducts(false);
     if (error) {
       if (error.code === "42P01" || error.code === "PGRST205")
         setStatus("La bandeja de envíos todavía no está activada por el administrador.");
+      else if (missingPublicPhotoColumn(error))
+        setStatus("Falta activar el campo de imágenes del catálogo en Supabase.");
       else setStatus(`No se pudieron enviar los productos: ${error.message}`);
       return;
     }
@@ -1888,6 +1933,7 @@ function PublicCatalogView() {
     );
     if (decision === "approved" && !alreadyPublic) {
       const exactLocal = localProducts.find((product) => productsMatchExactly(product, incoming));
+      const submissionPhoto = importedPhotoFields(submission.photo_data_url, incoming.name);
       const productId =
         exactLocal?.id ??
         (await db.products.add({
@@ -1898,7 +1944,11 @@ function PublicCatalogView() {
           rating: incoming.rating,
           notes: incoming.notes,
           purchaseUrl: incoming.purchaseUrl,
+          ...submissionPhoto,
         }));
+      const photoDataUrl = exactLocal
+        ? await publicPhotoDataUrl(exactLocal)
+        : submission.photo_data_url;
       const { error: publishError } = await supabase.from("public_products").upsert(
         {
           owner_id: user.id,
@@ -1908,12 +1958,18 @@ function PublicCatalogView() {
           generic_name: incoming.genericName,
           category: incoming.category,
           purchase_url: incoming.purchaseUrl || null,
+          photo_data_url: photoDataUrl || null,
           rating: incoming.rating,
           notes: incoming.notes,
         },
         { onConflict: "owner_id,source_product_id" },
       );
-      if (publishError) return setStatus(`No se pudo aprobar: ${publishError.message}`);
+      if (publishError)
+        return setStatus(
+          missingPublicPhotoColumn(publishError)
+            ? "Falta activar el campo de imágenes del catálogo en Supabase."
+            : `No se pudo aprobar: ${publishError.message}`,
+        );
     }
 
     const { error } = await supabase
@@ -1958,21 +2014,29 @@ function PublicCatalogView() {
     if (!isCatalogAdmin) return setStatus("Esta cuenta no tiene permiso para publicar productos.");
     const publishable = localProducts.filter((product): product is Product & { id: number } => Boolean(product.id));
     if (!publishable.length) return setStatus("No tienes productos locales para publicar.");
-    const rows = publishable.map((product) => ({
-      owner_id: user.id,
-      source_product_id: product.id,
-      name: product.name,
-      brand: product.brand,
-      generic_name: product.genericName,
-      category: product.category,
-      purchase_url: product.purchaseUrl || null,
-      rating: product.rating,
-      notes: product.notes,
-    }));
+    const rows = await Promise.all(
+      publishable.map(async (product) => ({
+        owner_id: user.id,
+        source_product_id: product.id,
+        name: product.name,
+        brand: product.brand,
+        generic_name: product.genericName,
+        category: product.category,
+        purchase_url: product.purchaseUrl || null,
+        photo_data_url: await publicPhotoDataUrl(product),
+        rating: product.rating,
+        notes: product.notes,
+      })),
+    );
     const { error } = await supabase
       .from("public_products")
       .upsert(rows, { onConflict: "owner_id,source_product_id" });
-    if (error) return setStatus(`No se pudieron publicar: ${error.message}`);
+    if (error)
+      return setStatus(
+        missingPublicPhotoColumn(error)
+          ? "Falta activar el campo de imágenes del catálogo en Supabase."
+          : `No se pudieron publicar: ${error.message}`,
+      );
     setStatus(`${rows.length} productos publicados o actualizados.`);
     await loadPublicProducts();
   }
@@ -1997,6 +2061,7 @@ function PublicCatalogView() {
         rating: product.rating,
         notes: product.notes,
         purchaseUrl: product.purchase_url ?? undefined,
+        ...importedPhotoFields(product.photo_data_url, product.name),
       };
       const id = await db.products.add(newProduct);
       knownProducts.push({ ...newProduct, id });
@@ -2201,6 +2266,13 @@ function PublicCatalogView() {
                 const sender = submission.sender_name || submission.sender_email || "Usuario anónimo";
                 return (
                   <article className="moderation-product" key={submission.id}>
+                    {submission.photo_data_url && (
+                      <img
+                        className="moderation-product-photo"
+                        src={submission.photo_data_url}
+                        alt={submission.name}
+                      />
+                    )}
                     <div className="moderation-product-main">
                       <span className="eyebrow">{submission.category}</span>
                       <strong>{submission.name}</strong>
@@ -2269,6 +2341,13 @@ function PublicCatalogView() {
                   />
                   {match === "exact" ? <em>Ya lo tienes</em> : match === "similar" ? <em className="similar">Producto similar</em> : <em className="new">Nuevo</em>}
                 </label>
+                {product.photo_data_url && (
+                  <img
+                    className="public-product-photo"
+                    src={product.photo_data_url}
+                    alt={product.name}
+                  />
+                )}
                 <div>
                   <span className="eyebrow">{product.category}</span>
                   {product.purchase_url && (
@@ -4517,8 +4596,9 @@ function SettingsView() {
       </div>
       {status && <div className="status-banner">{status}</div>}
       {sharedPreview && (
-        <div className="modal-backdrop">
-          <div className="modal shared-list-modal" role="dialog" aria-modal="true" aria-label="Revisar lista compartida">
+        <ModalPortal>
+          <div className="modal-backdrop">
+            <div className="modal shared-list-modal" role="dialog" aria-modal="true" aria-label="Revisar lista compartida">
             <div className="modal-head">
               <div>
                 <span className="eyebrow">IMPORTACIÓN SIN BORRADO</span>
@@ -4574,8 +4654,9 @@ function SettingsView() {
                 <Plus size={17} /> Incorporar seleccionados
               </button>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
       <div className="panel roadmap">
         <h3>Siguientes módulos previstos</h3>
