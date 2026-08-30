@@ -80,7 +80,6 @@ import {
 
 type View =
   | "dashboard"
-  | "tickets"
   | "products"
   | "public-catalog"
   | "supermarkets"
@@ -330,7 +329,7 @@ function App() {
             <div>
               <strong>Safari no ha podido abrir los datos locales</strong>
               <p>
-                Cierra otras pestañas de SmartMarket y vuelve a intentarlo. Tus tickets no se
+                Cierra otras pestañas de SmartMarket y vuelve a intentarlo. Tus datos no se
                 borrarán.
               </p>
               <small>{bootError}</small>
@@ -351,7 +350,6 @@ function App() {
       <main className={`main-content view-${view}`}>
         <Topbar />
         {view === "dashboard" && <Dashboard onGo={setView} />}
-        {view === "tickets" && <TicketsView />}
         {view === "products" && <ProductsView />}
         {view === "public-catalog" && <PublicCatalogView />}
         {view === "supermarkets" && <SupermarketsView />}
@@ -375,7 +373,6 @@ function ModalPortal({ children }: { children: ReactNode }) {
 function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) {
   const items: Array<{ id: View; label: string; icon: typeof Home }> = [
     { id: "dashboard", label: "Inicio", icon: Home },
-    { id: "tickets", label: "Tickets", icon: ReceiptText },
     { id: "products", label: "Productos", icon: ShoppingBasket },
     { id: "public-catalog", label: "Catálogo público", icon: Globe2 },
     { id: "supermarkets", label: "Supermercados", icon: Store },
@@ -413,7 +410,7 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
         <Database size={18} />
         <div>
           <strong>100 % local</strong>
-          <span>Los tickets y precios se guardan en este dispositivo.</span>
+          <span>Los productos y precios se guardan en este dispositivo.</span>
         </div>
       </div>
     </aside>
@@ -458,21 +455,21 @@ function Dashboard({ onGo }: { onGo: (v: View) => void }) {
               favoritos.
             </p>
           </div>
-          <button className="primary" onClick={() => onGo("tickets")}>
-            <Upload size={18} /> Añadir ticket
+          <button className="primary" onClick={() => onGo("products")}>
+            <Upload size={18} /> Añadir productos y precios
           </button>
         </div>
         <div className="metric-feature">
           <span>Gasto este mes</span>
           <strong>{money(monthSpend)}</strong>
           <small>
-            {tickets.filter((t) => t.date.startsWith(thisMonth)).length} tickets registrados
+            {tickets.filter((t) => t.date.startsWith(thisMonth)).length} compras registradas
           </small>
         </div>
       </div>
 
       <div className="metrics-grid">
-        <Metric icon={ReceiptText} label="Tickets" value={String(tickets.length)} />
+        <Metric icon={ReceiptText} label="Precios" value={String(purchases.length)} />
         <Metric icon={PackageSearch} label="Productos" value={String(products.length)} />
         <Metric icon={Star} label="Valorados" value={String(rated)} />
         <Metric icon={AlertTriangle} label="Alertas" value={String(alerts.length)} />
@@ -514,13 +511,13 @@ function Dashboard({ onGo }: { onGo: (v: View) => void }) {
             <BarChart3 size={20} />
           </div>
           <ul className="feature-list">
-            <li>Guardar tickets e imagen/PDF original en IndexedDB.</li>
+            <li>Guardar compras, precios e imagen/PDF original en el dispositivo.</li>
             <li>Editar productos, marcas, formatos, cantidades y descuentos.</li>
             <li>Agrupar marcas diferentes como el mismo producto genérico.</li>
             <li>Comparar automáticamente por €/kg, €/L o unidad.</li>
             <li>Valorar productos con 1–5 estrellas.</li>
             <li>Detectar subida de precio unitario y reducción de envase.</li>
-            <li>Leer tickets en imagen o PDF con OCR local y revisión previa.</li>
+            <li>Leer recibos en imagen o PDF con OCR local y revisión previa.</li>
           </ul>
         </div>
       </div>
@@ -540,7 +537,7 @@ function Metric({ icon: Icon, label, value }: { icon: typeof Home; label: string
   );
 }
 
-function TicketsView() {
+function ProductPriceWorkspace() {
   const supermarkets = useLiveQuery(() => db.supermarkets.toArray(), []) ?? [];
   const tickets = useLiveQuery(() => db.tickets.orderBy("date").reverse().toArray(), []) ?? [];
   const purchases = useLiveQuery(() => db.purchases.toArray(), []) ?? [];
@@ -561,7 +558,7 @@ function TicketsView() {
   };
 
   async function removeTicket(ticket: Ticket) {
-    if (!ticket.id || !confirm("¿Eliminar este ticket y sus líneas de compra?")) return;
+    if (!ticket.id || !confirm("¿Eliminar esta compra y todos sus precios?")) return;
     await db.transaction("rw", db.tickets, db.purchases, async () => {
       await db.purchases.where("ticketId").equals(ticket.id!).delete();
       await db.tickets.delete(ticket.id!);
@@ -576,21 +573,24 @@ function TicketsView() {
   }
 
   return (
-    <section className="page">
-      <div className="page-heading">
+    <div className="product-price-workspace">
+      <div className="panel product-price-heading">
         <div>
-          <span className="eyebrow">RECIBOS</span>
-          <h2>Tickets de compra</h2>
-          <p>El archivo original se guarda en tu navegador; las líneas son siempre editables.</p>
+          <span className="eyebrow">PRECIOS Y COMPRAS</span>
+          <h3>Registrar productos con todos sus datos</h3>
+          <p>
+            Añade supermercado, fecha, formato, unidades, precio, descuento, foto y recibo. Todos
+            los datos siguen siendo editables.
+          </p>
         </div>
         <button className="primary" onClick={openNew}>
-          <Plus size={18} /> Nuevo ticket
+          <Plus size={18} /> Añadir productos y precios
         </button>
       </div>
 
       <div className="metrics-grid ticket-metrics">
-        <Metric icon={ReceiptText} label="Tickets este mes" value={String(monthTickets.length)} />
-        <Metric icon={ShoppingBasket} label="Líneas guardadas" value={String(purchases.length)} />
+        <Metric icon={ReceiptText} label="Compras este mes" value={String(monthTickets.length)} />
+        <Metric icon={ShoppingBasket} label="Precios guardados" value={String(purchases.length)} />
         <Metric
           icon={Store}
           label="Supermercados"
@@ -602,10 +602,10 @@ function TicketsView() {
       {tickets.length === 0 ? (
         <div className="panel empty-large">
           <ReceiptText size={36} />
-          <h3>Aún no has añadido tickets</h3>
-          <p>Empieza con uno: puedes leerlo con el OCR local o registrar los productos a mano.</p>
+          <h3>Aún no has registrado precios</h3>
+          <p>Puedes leer un recibo con OCR local o introducir los productos directamente.</p>
           <button className="primary" onClick={openNew}>
-            Añadir primer ticket
+            Añadir primeros productos
           </button>
         </div>
       ) : (
@@ -644,7 +644,7 @@ function TicketsView() {
                   </button>
                   <button
                     className="icon-btn danger"
-                    aria-label="Eliminar ticket"
+                    aria-label="Eliminar compra"
                     onClick={() => removeTicket(ticket)}
                   >
                     <Trash2 size={17} />
@@ -665,7 +665,7 @@ function TicketsView() {
           onClose={() => setShowEditor(false)}
         />
       )}
-    </section>
+    </div>
   );
 }
 
@@ -700,7 +700,7 @@ function TicketEditor({
 
   async function runOcr() {
     if (!file) {
-      setOcrError("Selecciona antes la imagen o el PDF del ticket.");
+      setOcrError("Selecciona antes la imagen o el PDF del recibo.");
       return;
     }
     setOcrError("");
@@ -724,7 +724,7 @@ function TicketEditor({
         if (match?.id) setSupermarketId(match.id);
       }
     } catch (e) {
-      setOcrError(`No se pudo leer el ticket en este dispositivo: ${(e as Error).message}`);
+      setOcrError(`No se pudo leer el recibo en este dispositivo: ${(e as Error).message}`);
     } finally {
       setOcrBusy(false);
     }
@@ -888,12 +888,12 @@ function TicketEditor({
           className="modal"
           role="dialog"
           aria-modal="true"
-          aria-label={ticketId ? "Editar ticket" : "Nuevo ticket"}
+          aria-label={ticketId ? "Editar compra" : "Añadir productos y precios"}
         >
         <div className="modal-head">
           <div>
-            <span className="eyebrow">{ticketId ? "EDITAR" : "NUEVO"}</span>
-            <h2>{ticketId ? "Editar ticket" : "Registrar ticket"}</h2>
+            <span className="eyebrow">{ticketId ? "EDITAR COMPRA" : "NUEVO REGISTRO"}</span>
+            <h2>{ticketId ? "Editar productos y precios" : "Añadir productos y precios"}</h2>
           </div>
           <button className="icon-btn" onClick={onClose}>
             <X size={20} />
@@ -919,7 +919,7 @@ function TicketEditor({
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
           <label>
-            Ticket (imagen/PDF)
+            Recibo (imagen/PDF)
             <input
               type="file"
               accept="image/*,.pdf,application/pdf"
@@ -944,7 +944,7 @@ function TicketEditor({
               {ocrError && <span className="error">{ocrError}</span>}
             </div>
             <button className="primary" type="button" onClick={runOcr} disabled={ocrBusy}>
-              <Wand2 size={17} /> {ocrBusy ? "Leyendo…" : "Leer ticket con OCR"}
+              <Wand2 size={17} /> {ocrBusy ? "Leyendo…" : "Leer recibo con OCR"}
             </button>
           </div>
         </div>
@@ -1116,7 +1116,7 @@ function TicketEditor({
               Cancelar
             </button>
             <button className="primary" onClick={save}>
-              <Save size={17} /> Guardar ticket
+              <Save size={17} /> Guardar productos y precios
             </button>
           </div>
         </div>
@@ -1157,7 +1157,7 @@ function OcrReview({
               : "Supermercado no detectado"}{" "}
             · {result.date ? `Fecha: ${result.date}` : "Fecha no detectada"} ·{" "}
             {result.total !== null
-              ? `Total del ticket: ${money(result.total)}`
+              ? `Total del recibo: ${money(result.total)}`
               : "Total no detectado"}
           </p>
         </div>
@@ -1176,7 +1176,7 @@ function OcrReview({
             <thead>
               <tr>
                 <th>Usar</th>
-                <th>Nombre en ticket</th>
+                <th>Nombre en recibo</th>
                 <th>Nombre normalizado</th>
                 <th>Producto genérico</th>
                 <th>Marca</th>
@@ -1283,7 +1283,7 @@ function OcrReview({
       <div className="ocr-review-actions">
         <span>
           Tus correcciones se guardan como equivalencias locales y se reutilizarán en próximos
-          tickets.
+          recibos.
         </span>
         <div>
           <button className="ghost" type="button" onClick={onCancel}>
@@ -1295,7 +1295,7 @@ function OcrReview({
             disabled={!selected.length}
             onClick={() => onApply(selected)}
           >
-            <Save size={17} /> Pasar {selected.length} líneas al ticket
+            <Save size={17} /> Añadir {selected.length} productos
           </button>
         </div>
       </div>
@@ -1429,7 +1429,7 @@ function ProductsView() {
   async function deleteProduct(product: Product) {
     if (!product.id || purchases.some((p) => p.productId === product.id))
       return alert(
-        "Este producto tiene compras asociadas. Edita o elimina primero los tickets correspondientes.",
+        "Este producto tiene precios asociados. Edita o elimina primero sus compras registradas.",
       );
     await db.products.delete(product.id);
   }
@@ -1439,8 +1439,11 @@ function ProductsView() {
       <div className="page-heading">
         <div>
           <span className="eyebrow">CATÁLOGO PERSONAL</span>
-          <h2>Productos y equivalencias</h2>
-          <p>El campo “Producto genérico” une marcas diferentes para poder compararlas.</p>
+          <h2>Productos y precios</h2>
+          <p>
+            Registra cada compra y consulta en un solo lugar el producto, su formato, precio y
+            supermercado. “Producto genérico” permite comparar marcas diferentes.
+          </p>
         </div>
         <div className="product-heading-actions">
           <input
@@ -1460,6 +1463,7 @@ function ProductsView() {
           )}
         </div>
       </div>
+      <ProductPriceWorkspace />
       {isCatalogAdmin && showNewProduct && (
         <div className="panel new-product-panel">
           <div>
@@ -1513,8 +1517,8 @@ function ProductsView() {
           <Empty
             text={
               isCatalogAdmin
-                ? "Crea un producto manualmente o añade un ticket para construir tu catálogo."
-                : "Añade un ticket o incorpora productos del catálogo público para construir tu catálogo."
+                ? "Crea un producto recomendado o registra una compra para construir tu catálogo."
+                : "Registra una compra o incorpora productos del catálogo público para construir tu catálogo."
             }
           />
         </div>
@@ -1635,9 +1639,21 @@ function ProductsView() {
                   <span>{market ? `Último: ${market}` : "Sin compras"}</span>
                   <strong>
                     {latest
-                      ? formatUnitPrice(latest.normalizedUnitPrice, latest.normalizedUnit)
+                      ? money(Math.max(0, latest.price - latest.discount))
                       : "—"}
                   </strong>
+                  {latest && (
+                    <>
+                      <small>
+                        {formatUnitPrice(latest.normalizedUnitPrice, latest.normalizedUnit)} ·{" "}
+                        {latest.packageAmount} {latest.packageUnit} × {latest.quantityPurchased}
+                      </small>
+                      <small>
+                        {new Date(`${latest.date}T00:00:00`).toLocaleDateString("es-ES")}
+                        {latest.discount > 0 ? ` · Descuento ${money(latest.discount)}` : ""}
+                      </small>
+                    </>
+                  )}
                 </div>
                 <div className="product-purchase-link">
                   {isCatalogAdmin && (
@@ -2085,7 +2101,7 @@ function PublicCatalogView() {
         <div>
           <span className="eyebrow">COMPARTIDO EN LA NUBE</span>
           <h2>Catálogo público</h2>
-          <p>Productos visibles para cualquiera que abra SmartMarket. Tus tickets siguen siendo privados.</p>
+          <p>Productos visibles para cualquiera que abra SmartMarket. Tus compras siguen siendo privadas.</p>
         </div>
         <input
           className="search"
@@ -2143,7 +2159,7 @@ function PublicCatalogView() {
               <strong>Comparte tus productos con la comunidad</strong>
               <span>
                 Elige productos de tu catálogo y envíalos al administrador. No se comparten
-                tickets, listas de la compra ni precios privados.
+                compras, listas ni precios privados.
               </span>
             </div>
           </div>
@@ -2575,7 +2591,7 @@ function StoreProductDirectory({
   if (!stores.length)
     return (
       <div className="panel">
-        <Empty text="Añade tickets para ver qué productos has comprado en cada supermercado." />
+        <Empty text="Registra precios para ver qué productos has comprado en cada supermercado." />
       </div>
     );
   return (
@@ -3701,7 +3717,7 @@ function MedinaView() {
           <span className="eyebrow">OBSERVATORIO DE VERANO</span>
           <h2>Supermercados de Medina de Pomar</h2>
           <p>
-            Registra los tickets con la ubicación de Medina y comprobaremos con tus propios datos si
+            Registra tus compras con la ubicación de Medina y comprobaremos con tus propios datos si
             el veraneo encarece la cesta.
           </p>
         </div>
@@ -3718,7 +3734,7 @@ function MedinaView() {
           label="Supermercados localizados"
           value={String(MEDINA_SUPERMARKETS.length)}
         />
-        <Metric icon={ReceiptText} label="Tickets de Medina" value={String(medinaTickets.length)} />
+        <Metric icon={ReceiptText} label="Compras en Medina" value={String(medinaTickets.length)} />
         <Metric icon={ShoppingBasket} label="Gasto registrado" value={money(medinaSpend)} />
         <Metric
           icon={Scale}
@@ -3761,7 +3777,7 @@ function MedinaView() {
               </div>
               <div className="medina-store-stats">
                 <div>
-                  <span>Tickets</span>
+                  <span>Compras</span>
                   <strong>{storeTickets.length}</strong>
                 </div>
                 <div>
@@ -3948,17 +3964,10 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
     icon: typeof Home;
   }> = [
     {
-      view: "tickets",
-      title: "Tickets",
-      description:
-        "Sube una foto o un PDF. Revisa las líneas reconocidas antes de guardar cantidades, formatos y precios.",
-      icon: ReceiptText,
-    },
-    {
       view: "products",
-      title: "Productos",
+      title: "Productos y precios",
       description:
-        "Consulta y corrige tus productos. El administrador puede crearlos manualmente y añadir enlaces de compra.",
+        "Añade productos a mano o leyendo un recibo. Guarda supermercado, fecha, formato, unidades, descuentos, precios, fotos y enlaces de compra.",
       icon: ShoppingBasket,
     },
     {
@@ -4031,7 +4040,7 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
       </div>
       <div className="info-steps">
         <div className="panel info-step"><em>01</em><strong>Añade tus tiendas</strong><span>Crea los supermercados que utilizas habitualmente.</span></div>
-        <div className="panel info-step"><em>02</em><strong>Guarda precios</strong><span>Sube tickets o incorpora productos del catálogo público.</span></div>
+        <div className="panel info-step"><em>02</em><strong>Guarda precios</strong><span>Registra productos o incorpóralos desde el catálogo público.</span></div>
         <div className="panel info-step"><em>03</em><strong>Revisa los formatos</strong><span>Indica gramos, litros o unidades para comparar correctamente.</span></div>
         <div className="panel info-step"><em>04</em><strong>Compara y compra</strong><span>Prepara la lista y consulta la tienda más conveniente.</span></div>
       </div>
@@ -4059,7 +4068,7 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
           <div>
             <h3>Tus compras siguen siendo privadas</h3>
             <p>
-              Los tickets, precios y listas se guardan en este navegador. Para llevarlos a otro
+              Las compras, precios y listas se guardan en este navegador. Para llevarlos a otro
               dispositivo, crea una copia en Ajustes. El catálogo público solo contiene los
               productos que el administrador decide publicar.
             </p>
@@ -4484,7 +4493,7 @@ function SettingsView() {
   async function wipe() {
     if (
       !confirm(
-        "Esto eliminará tickets, productos, históricos y archivos guardados localmente. ¿Continuar?",
+        "Esto eliminará compras, productos, históricos y archivos guardados localmente. ¿Continuar?",
       )
     )
       return;
@@ -4534,7 +4543,7 @@ function SettingsView() {
         <div className="panel setting-card">
           <FileDown size={24} />
           <h3>Exportar copia</h3>
-          <p>Incluye base de datos y archivos originales de tickets.</p>
+          <p>Incluye productos, precios y archivos originales de las compras.</p>
           <button className="primary" onClick={exportData}>
             <FileDown size={17} /> Exportar JSON
           </button>
@@ -4679,7 +4688,7 @@ function SettingsView() {
           <RoadmapItem
             n="04"
             title="Aprendizaje"
-            text="Recordar abreviaturas de ticket, equivalencias y correcciones."
+            text="Recordar abreviaturas de recibos, equivalencias y correcciones."
           />
         </div>
       </div>
