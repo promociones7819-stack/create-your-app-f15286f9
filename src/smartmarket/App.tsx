@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useLiveQuery } from "dexie-react-hooks";
 import type { User } from "@supabase/supabase-js";
@@ -692,6 +692,7 @@ function TicketEditor({
   const [lines, setLines] = useState<TicketLineDraft[]>([emptyLine()]);
   const [loaded, setLoaded] = useState(ticketId === null);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const [ocrBusy, setOcrBusy] = useState(false);
   const [ocrStage, setOcrStage] = useState("");
   const [ocrProgress, setOcrProgress] = useState(0);
@@ -779,13 +780,32 @@ function TicketEditor({
 
   async function save() {
     setError("");
-    const valid = lines.filter(
-      (l) => l.productName.trim() && l.price >= 0 && l.packageAmount > 0 && l.quantityPurchased > 0,
+    const candidates = lines.filter(
+      (line) =>
+        line.productName.trim() ||
+        line.genericName.trim() ||
+        line.brand.trim() ||
+        line.price !== 0 ||
+        line.discount !== 0 ||
+        line.packageAmount !== 1 ||
+        line.quantityPurchased !== 1 ||
+        line.photoBlob,
     );
+    const invalid = candidates.flatMap((line, index) => {
+      const missing: string[] = [];
+      if (!line.productName.trim()) missing.push("nombre");
+      if (line.price < 0) missing.push("precio");
+      if (line.packageAmount <= 0) missing.push("formato");
+      if (line.quantityPurchased <= 0) missing.push("unidades");
+      return missing.length ? [`Producto ${index + 1}: ${missing.join(", ")}`] : [];
+    });
     if (!supermarketId) return setError("Selecciona un supermercado.");
-    if (!valid.length) return setError("Añade al menos un producto con nombre, formato y precio.");
+    if (!candidates.length) return setError("Añade al menos un producto con nombre, formato y precio.");
+    if (invalid.length) return setError(`No se ha guardado nada. Revisa ${invalid.join(" · ")}.`);
 
-    await db.transaction("rw", db.tickets, db.products, db.purchases, db.equivalences, async () => {
+    setSaving(true);
+    try {
+      await db.transaction("rw", db.tickets, db.products, db.purchases, db.equivalences, async () => {
       let currentId = ticketId;
       if (currentId) {
         const old = await db.tickets.get(currentId);
@@ -810,7 +830,7 @@ function TicketEditor({
         });
       }
 
-      for (const line of valid) {
+      for (const line of candidates) {
         const name = line.productName.trim();
         const brand = line.brand.trim();
         const genericName = line.genericName.trim() || name;
@@ -877,8 +897,17 @@ function TicketEditor({
           normalizedUnit: normalized.unit,
         });
       }
-    });
-    onClose();
+      });
+      onClose();
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? `No se pudieron guardar los productos: ${saveError.message}`
+          : "No se pudieron guardar los productos. Inténtalo de nuevo.",
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -1115,8 +1144,8 @@ function TicketEditor({
             <button className="ghost" onClick={onClose}>
               Cancelar
             </button>
-            <button className="primary" onClick={save}>
-              <Save size={17} /> Guardar productos y precios
+            <button className="primary" onClick={save} disabled={saving}>
+              <Save size={17} /> {saving ? "Guardando…" : "Guardar productos y precios"}
             </button>
           </div>
         </div>
@@ -1304,9 +1333,12 @@ function OcrReview({
 }
 
 function ProductsView() {
-  const products = useLiveQuery(() => db.products.orderBy("genericName").toArray(), []) ?? [];
-  const purchases = useLiveQuery(() => db.purchases.toArray(), []) ?? [];
-  const supermarkets = useLiveQuery(() => db.supermarkets.toArray(), []) ?? [];
+  const productRecords = useLiveQuery(() => db.products.orderBy("genericName").toArray(), []);
+  const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
+  const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
+  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
+  const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const [catalogUser, setCatalogUser] = useState<User | null>(null);
   const [query, setQuery] = useState("");
   const [showNewProduct, setShowNewProduct] = useState(false);
@@ -1316,8 +1348,28 @@ function ProductsView() {
   const [newCategory, setNewCategory] = useState<string>(PRODUCT_CATEGORIES[5]);
   const [newPurchaseUrl, setNewPurchaseUrl] = useState("");
   const [productError, setProductError] = useState("");
+  const [catalogSyncStatus, setCatalogSyncStatus] = useState("");
+  const lastCatalogSyncSignature = useRef("");
   const isCatalogAdmin =
     catalogUser?.email?.toLocaleLowerCase("es-ES") === PUBLIC_CATALOG_ADMIN_EMAIL;
+  const catalogSignature = useMemo(
+    () =>
+      JSON.stringify(
+        products.map((product) => ({
+          id: product.id,
+          name: product.name,
+          brand: product.brand,
+          genericName: product.genericName,
+          category: product.category,
+          purchaseUrl: product.purchaseUrl,
+          rating: product.rating,
+          notes: product.notes,
+          photoSize: product.photoBlob?.size ?? 0,
+          photoType: product.photoBlob?.type ?? "",
+        })),
+      ),
+    [products],
+  );
   const filtered = products.filter((p) =>
     `${p.name} ${p.brand} ${p.genericName}`.toLowerCase().includes(query.toLowerCase()),
   );
@@ -1329,6 +1381,30 @@ function ProductsView() {
     );
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!isCatalogAdmin || !catalogUser?.id || !products.some((product) => product.id)) return;
+    if (catalogSignature === lastCatalogSyncSignature.current) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      if (active) setCatalogSyncStatus("Sincronizando productos con el catálogo público…");
+      void publishProductsToPublicCatalog(products, catalogUser.id).then((result) => {
+        if (result.error) {
+          if (active) setCatalogSyncStatus(result.error);
+          return;
+        }
+        lastCatalogSyncSignature.current = catalogSignature;
+        if (active)
+          setCatalogSyncStatus(
+            `Catálogo público actualizado automáticamente · ${result.count} productos.`,
+          );
+      });
+    }, 500);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [catalogSignature, catalogUser?.id, isCatalogAdmin, products]);
 
   async function setRating(product: Product, rating: number) {
     if (product.id) await db.products.update(product.id, { rating });
@@ -1393,21 +1469,29 @@ function ProductsView() {
         comparableText(product.brand) === comparableText(brand),
     );
     if (duplicate) return setProductError("Ese producto y marca ya están guardados.");
-    await db.products.add({
-      name,
-      brand,
-      genericName,
-      category: newCategory,
-      rating: 0,
-      notes: "",
-      ...(purchaseUrl ? { purchaseUrl } : {}),
-    });
-    setNewName("");
-    setNewBrand("");
-    setNewGenericName("");
-    setNewCategory(PRODUCT_CATEGORIES[5]);
-    setNewPurchaseUrl("");
-    setShowNewProduct(false);
+    try {
+      await db.products.add({
+        name,
+        brand,
+        genericName,
+        category: newCategory,
+        rating: 0,
+        notes: "",
+        ...(purchaseUrl ? { purchaseUrl } : {}),
+      });
+      setNewName("");
+      setNewBrand("");
+      setNewGenericName("");
+      setNewCategory(PRODUCT_CATEGORIES[5]);
+      setNewPurchaseUrl("");
+      setShowNewProduct(false);
+    } catch (createError) {
+      setProductError(
+        createError instanceof Error
+          ? `No se pudo guardar el producto: ${createError.message}`
+          : "No se pudo guardar el producto.",
+      );
+    }
   }
   async function updatePhoto(product: Product, photo?: File) {
     if (!product.id) return;
@@ -1431,6 +1515,14 @@ function ProductsView() {
       return alert(
         "Este producto tiene precios asociados. Edita o elimina primero sus compras registradas.",
       );
+    if (isCatalogAdmin && catalogUser?.id) {
+      const { error } = await supabase
+        .from("public_products")
+        .delete()
+        .eq("owner_id", catalogUser.id)
+        .eq("source_product_id", product.id);
+      if (error) return alert(`No se pudo retirar del catálogo público: ${error.message}`);
+    }
     await db.products.delete(product.id);
   }
 
@@ -1463,6 +1555,9 @@ function ProductsView() {
           )}
         </div>
       </div>
+      {isCatalogAdmin && catalogSyncStatus && (
+        <div className="catalog-status auto-catalog-status">{catalogSyncStatus}</div>
+      )}
       <ProductPriceWorkspace />
       {isCatalogAdmin && showNewProduct && (
         <div className="panel new-product-panel">
@@ -1684,6 +1779,11 @@ function ProductsView() {
                 <button className="icon-btn danger" onClick={() => deleteProduct(product)}>
                   <Trash2 size={16} />
                 </button>
+                <ProductPriceEditor
+                  product={product}
+                  latest={latest}
+                  supermarkets={supermarkets}
+                />
               </article>
             );
           })}
@@ -1695,6 +1795,170 @@ function ProductsView() {
           : "Los productos manuales y sus enlaces de compra solo puede gestionarlos el administrador."}
       </p>
     </section>
+  );
+}
+
+function ProductPriceEditor({
+  product,
+  latest,
+  supermarkets,
+}: {
+  product: Product;
+  latest?: Purchase;
+  supermarkets: Supermarket[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [price, setPrice] = useState(0);
+  const [date, setDate] = useState(todayISO());
+  const [supermarketId, setSupermarketId] = useState(0);
+  const [packageAmount, setPackageAmount] = useState(1);
+  const [packageUnit, setPackageUnit] = useState<PackageUnit>("ud");
+  const [status, setStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function openEditor() {
+    setPrice(latest ? Math.max(0, latest.price - latest.discount) : 0);
+    setDate(todayISO());
+    setSupermarketId(latest?.supermarketId ?? supermarkets[0]?.id ?? 0);
+    setPackageAmount(latest?.packageAmount ?? 1);
+    setPackageUnit(latest?.packageUnit ?? "ud");
+    setStatus("");
+    setOpen(true);
+  }
+
+  async function saveHistoricalPrice() {
+    if (!product.id) return;
+    if (!supermarketId) return setStatus("Selecciona un supermercado.");
+    if (!date) return setStatus("Selecciona la fecha del precio.");
+    if (price < 0) return setStatus("El precio no puede ser negativo.");
+    if (packageAmount <= 0) return setStatus("El formato debe ser mayor que cero.");
+
+    setSaving(true);
+    setStatus("");
+    try {
+      const normalized = normalizeUnitPrice(price, 0, 1, packageAmount, packageUnit);
+      await db.transaction("rw", db.tickets, db.purchases, async () => {
+        const ticketId = await db.tickets.add({
+          supermarketId,
+          date,
+          total: price,
+          filename: "Actualización manual de precio",
+          fileType: "text/plain",
+          createdAt: new Date().toISOString(),
+        });
+        await db.purchases.add({
+          ticketId,
+          productId: product.id!,
+          supermarketId,
+          date,
+          rawName: product.name,
+          quantityPurchased: 1,
+          packageAmount,
+          packageUnit,
+          price,
+          discount: 0,
+          normalizedUnitPrice: normalized.value,
+          normalizedUnit: normalized.unit,
+        });
+      });
+      setOpen(false);
+      setStatus(
+        `Precio del ${new Date(`${date}T00:00:00`).toLocaleDateString("es-ES")} añadido al histórico.`,
+      );
+    } catch (priceError) {
+      setStatus(
+        priceError instanceof Error
+          ? `No se pudo guardar el precio: ${priceError.message}`
+          : "No se pudo guardar el precio.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className={open ? "price-history-editor open" : "price-history-editor"}>
+      <div className="price-history-editor-head">
+        <div>
+          <strong>Evolución del precio</strong>
+          <span>Añade un precio con su fecha. Los anteriores se conservan para mostrar la evolución.</span>
+        </div>
+        <button
+          className={open ? "ghost" : "primary"}
+          type="button"
+          onClick={() => (open ? setOpen(false) : openEditor())}
+        >
+          {open ? <X size={16} /> : <History size={16} />}
+          {open ? "Cerrar" : "Actualizar precio"}
+        </button>
+      </div>
+      {open && (
+        <div className="price-history-form">
+          <label>
+            Precio del envase
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={price}
+              onChange={(event) => setPrice(parseNumber(event.target.value))}
+            />
+          </label>
+          <label>
+            Fecha
+            <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+          </label>
+          <label>
+            Supermercado
+            <select
+              value={supermarketId}
+              onChange={(event) => setSupermarketId(Number(event.target.value))}
+            >
+              <option value={0}>Seleccionar…</option>
+              {supermarkets.map((supermarket) => (
+                <option key={supermarket.id} value={supermarket.id}>
+                  {supermarket.name}{supermarket.locality ? ` · ${supermarket.locality}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Formato
+            <div className="format-input">
+              <input
+                type="number"
+                min="0.001"
+                step="0.001"
+                value={packageAmount}
+                onChange={(event) => setPackageAmount(parseNumber(event.target.value))}
+              />
+              <select
+                value={packageUnit}
+                onChange={(event) => setPackageUnit(event.target.value as PackageUnit)}
+              >
+                <option value="g">g</option>
+                <option value="kg">kg</option>
+                <option value="ml">ml</option>
+                <option value="l">L</option>
+                <option value="ud">ud</option>
+              </select>
+            </div>
+          </label>
+          <div className="price-history-save">
+            <span className={status ? "error" : ""}>{status}</span>
+            <button
+              className="primary"
+              type="button"
+              disabled={saving}
+              onClick={() => void saveHistoricalPrice()}
+            >
+              <Save size={16} /> {saving ? "Guardando…" : "Añadir al histórico"}
+            </button>
+          </div>
+        </div>
+      )}
+      {!open && status && <span className="price-history-success">{status}</span>}
+    </div>
   );
 }
 
@@ -1729,6 +1993,37 @@ async function publicPhotoDataUrl(product: Product) {
 
 function missingPublicPhotoColumn(error: { message?: string }) {
   return error.message?.includes("photo_data_url") ?? false;
+}
+
+async function publishProductsToPublicCatalog(products: Product[], userId: string) {
+  const publishable = products.filter(
+    (product): product is Product & { id: number } => Boolean(product.id),
+  );
+  if (!publishable.length) return { count: 0 };
+  const rows = await Promise.all(
+    publishable.map(async (product) => ({
+      owner_id: userId,
+      source_product_id: product.id,
+      name: product.name,
+      brand: product.brand,
+      generic_name: product.genericName,
+      category: product.category,
+      purchase_url: product.purchaseUrl || null,
+      photo_data_url: await publicPhotoDataUrl(product),
+      rating: product.rating,
+      notes: product.notes,
+    })),
+  );
+  const { error } = await supabase
+    .from("public_products")
+    .upsert(rows, { onConflict: "owner_id,source_product_id" });
+  if (!error) return { count: rows.length };
+  return {
+    count: 0,
+    error: missingPublicPhotoColumn(error)
+      ? "No se pudo sincronizar: falta activar el campo de imágenes del catálogo en Supabase."
+      : `No se pudo sincronizar el catálogo público: ${error.message}`,
+  };
 }
 
 function publicProductForMatching(product: PublicCatalogProduct): ImportedProduct {
@@ -2028,32 +2323,10 @@ function PublicCatalogView() {
   async function publishAll() {
     if (!user) return setStatus("Inicia sesión como administrador para publicar productos.");
     if (!isCatalogAdmin) return setStatus("Esta cuenta no tiene permiso para publicar productos.");
-    const publishable = localProducts.filter((product): product is Product & { id: number } => Boolean(product.id));
-    if (!publishable.length) return setStatus("No tienes productos locales para publicar.");
-    const rows = await Promise.all(
-      publishable.map(async (product) => ({
-        owner_id: user.id,
-        source_product_id: product.id,
-        name: product.name,
-        brand: product.brand,
-        generic_name: product.genericName,
-        category: product.category,
-        purchase_url: product.purchaseUrl || null,
-        photo_data_url: await publicPhotoDataUrl(product),
-        rating: product.rating,
-        notes: product.notes,
-      })),
-    );
-    const { error } = await supabase
-      .from("public_products")
-      .upsert(rows, { onConflict: "owner_id,source_product_id" });
-    if (error)
-      return setStatus(
-        missingPublicPhotoColumn(error)
-          ? "Falta activar el campo de imágenes del catálogo en Supabase."
-          : `No se pudieron publicar: ${error.message}`,
-      );
-    setStatus(`${rows.length} productos publicados o actualizados.`);
+    const result = await publishProductsToPublicCatalog(localProducts, user.id);
+    if (result.error) return setStatus(result.error);
+    if (!result.count) return setStatus("No tienes productos locales para publicar.");
+    setStatus(`${result.count} productos publicados o actualizados.`);
     await loadPublicProducts();
   }
 
@@ -3349,6 +3622,7 @@ function HistoryView() {
     new Set(relevant.map((p) => p.supermarket?.name).filter(Boolean)),
   ) as string[];
   const months = Array.from(new Set(relevant.map((purchase) => purchase.date.slice(0, 7)))).sort();
+  const dates = Array.from(new Set(relevant.map((purchase) => purchase.date))).sort();
   const monthlyRows = months.flatMap((month) =>
     selected.flatMap((genericName) => {
       const rows = relevant.filter(
@@ -3371,16 +3645,24 @@ function HistoryView() {
       ];
     }),
   );
-  const chartData = months.map((month) => {
+  const chartData = dates.map((date) => {
     const point: Record<string, string | number> = {
-      month,
-      label: new Date(`${month}-01T00:00:00`).toLocaleDateString("es-ES", {
+      date,
+      label: new Date(`${date}T00:00:00`).toLocaleDateString("es-ES", {
+        day: "2-digit",
         month: "short",
         year: "2-digit",
       }),
     };
-    for (const row of monthlyRows.filter((candidate) => candidate.month === month))
-      point[row.genericName] = Number(row.average.toFixed(2));
+    for (const genericName of selected) {
+      const rows = relevant.filter(
+        (purchase) => purchase.date === date && purchase.product?.genericName === genericName,
+      );
+      if (rows.length)
+        point[genericName] = Number(
+          (rows.reduce((sum, purchase) => sum + purchase.normalizedUnitPrice, 0) / rows.length).toFixed(2),
+        );
+    }
     return point;
   });
   const supermarketAverages = selected.flatMap((genericName) =>
@@ -3452,13 +3734,13 @@ function HistoryView() {
             <Metric icon={History} label="Registros" value={String(relevant.length)} />
             <Metric icon={ShoppingBasket} label="Productos" value={String(selected.length)} />
             <Metric icon={Store} label="Supermercados" value={String(markets.length)} />
-            <Metric icon={BarChart3} label="Meses analizados" value={String(months.length)} />
+            <Metric icon={BarChart3} label="Fechas registradas" value={String(dates.length)} />
           </div>
           <div className="panel chart-panel">
             <div className="panel-title">
               <div>
-                <h3>Evolución mensual</h3>
-                <p>Precio medio comparable de todos los supermercados en cada mes.</p>
+                <h3>Evolución por fecha</h3>
+                <p>Cada actualización de precio aparece en la fecha en que la registraste.</p>
               </div>
               <BarChart3 size={20} />
             </div>
