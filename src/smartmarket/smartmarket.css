@@ -906,6 +906,56 @@ button {
   color: #6c7872;
   font-size: 11px;
 }
+.product-offer-summary {
+  gap: 4px;
+}
+.product-offer-summary small b {
+  color: #33423a;
+}
+.ghost.compact {
+  width: fit-content;
+  min-height: 30px;
+  margin-top: 4px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+.product-offers-modal {
+  width: min(1180px, calc(100vw - 32px));
+}
+.product-offers-modal .modal-head p {
+  margin: 5px 0 0;
+  color: #68766f;
+  font-size: 12px;
+}
+.offer-editor-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+.offer-editor-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.4fr) repeat(5, minmax(90px, 0.7fr)) 38px;
+  gap: 9px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid #e0e5e2;
+  border-radius: 12px;
+  background: #f8faf9;
+}
+.offer-editor-row label {
+  min-width: 0;
+}
+.add-offer-button {
+  width: fit-content;
+}
+@media (max-width: 900px) {
+  .offer-editor-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .offer-editor-row > label:first-child {
+    grid-column: 1 / -1;
+  }
+}
 .affiliate-support-note {
   display: flex;
   align-items: center;

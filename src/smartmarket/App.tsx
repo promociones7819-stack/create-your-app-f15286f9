@@ -1316,6 +1316,7 @@ function ProductsView() {
   const [newCategory, setNewCategory] = useState<string>(PRODUCT_CATEGORIES[5]);
   const [newPurchaseUrl, setNewPurchaseUrl] = useState("");
   const [productError, setProductError] = useState("");
+  const [editingOffersProduct, setEditingOffersProduct] = useState<Product | null>(null);
   const isCatalogAdmin =
     catalogUser?.email?.toLocaleLowerCase("es-ES") === PUBLIC_CATALOG_ADMIN_EMAIL;
   const filtered = products.filter((p) =>
@@ -1528,8 +1529,12 @@ function ProductsView() {
             const pp = purchases
               .filter((p) => p.productId === product.id)
               .sort((a, b) => b.date.localeCompare(a.date));
-            const latest = pp[0];
-            const market = supermarkets.find((s) => s.id === latest?.supermarketId)?.name;
+            const latestByMarket = Array.from(
+              pp.reduce((offers, purchase) => {
+                if (!offers.has(purchase.supermarketId)) offers.set(purchase.supermarketId, purchase);
+                return offers;
+              }, new Map<number, Purchase>()),
+            );
             return (
               <article className="product-row" key={product.id}>
                 <div className="product-main">
@@ -1635,25 +1640,18 @@ function ProductsView() {
                     </button>
                   ))}
                 </div>
-                <div className="latest-price">
-                  <span>{market ? `Último: ${market}` : "Sin compras"}</span>
-                  <strong>
-                    {latest
-                      ? money(Math.max(0, latest.price - latest.discount))
-                      : "—"}
-                  </strong>
-                  {latest && (
-                    <>
-                      <small>
-                        {formatUnitPrice(latest.normalizedUnitPrice, latest.normalizedUnit)} ·{" "}
-                        {latest.packageAmount} {latest.packageUnit} × {latest.quantityPurchased}
-                      </small>
-                      <small>
-                        {new Date(`${latest.date}T00:00:00`).toLocaleDateString("es-ES")}
-                        {latest.discount > 0 ? ` · Descuento ${money(latest.discount)}` : ""}
-                      </small>
-                    </>
-                  )}
+                <div className="latest-price product-offer-summary">
+                  <span>{latestByMarket.length ? `${latestByMarket.length} supermercados` : "Sin precios"}</span>
+                  {latestByMarket.slice(0, 3).map(([supermarketId, offer]) => (
+                    <small key={supermarketId}>
+                      <b>{supermarkets.find((store) => store.id === supermarketId)?.name ?? "Supermercado"}</b>{" "}
+                      {money(Math.max(0, offer.price - offer.discount))} · {offer.packageAmount} {offer.packageUnit}
+                    </small>
+                  ))}
+                  {latestByMarket.length > 3 && <small>+ {latestByMarket.length - 3} más</small>}
+                  <button className="ghost compact" type="button" onClick={() => setEditingOffersProduct(product)}>
+                    <Pencil size={14} /> Editar precios y formatos
+                  </button>
                 </div>
                 <div className="product-purchase-link">
                   {isCatalogAdmin && (
@@ -1694,7 +1692,214 @@ function ProductsView() {
           ? "Como administrador puedes crear productos manuales y editar sus enlaces de afiliado."
           : "Los productos manuales y sus enlaces de compra solo puede gestionarlos el administrador."}
       </p>
+      {editingOffersProduct && (
+        <ProductOffersEditor
+          product={editingOffersProduct}
+          supermarkets={supermarkets}
+          purchases={purchases}
+          onClose={() => setEditingOffersProduct(null)}
+        />
+      )}
     </section>
+  );
+}
+
+type ProductOfferDraft = {
+  key: string;
+  purchaseId?: number;
+  supermarketId: number;
+  price: number;
+  packageAmount: number;
+  packageUnit: PackageUnit;
+  quantityPurchased: number;
+  date: string;
+  removed?: boolean;
+};
+
+function ProductOffersEditor({
+  product,
+  supermarkets,
+  purchases,
+  onClose,
+}: {
+  product: Product;
+  supermarkets: Supermarket[];
+  purchases: Purchase[];
+  onClose: () => void;
+}) {
+  const latestOffers = Array.from(
+    purchases
+      .filter((purchase) => purchase.productId === product.id)
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .reduce((offers, purchase) => {
+        if (!offers.has(purchase.supermarketId)) offers.set(purchase.supermarketId, purchase);
+        return offers;
+      }, new Map<number, Purchase>())
+      .values(),
+  );
+  const [rows, setRows] = useState<ProductOfferDraft[]>(() =>
+    latestOffers.map((offer) => ({
+      key: uid(),
+      ...(offer.id ? { purchaseId: offer.id } : {}),
+      supermarketId: offer.supermarketId,
+      price: offer.price,
+      packageAmount: offer.packageAmount,
+      packageUnit: offer.packageUnit,
+      quantityPurchased: offer.quantityPurchased,
+      date: offer.date,
+    })),
+  );
+  const [error, setError] = useState("");
+
+  function addStore() {
+    const used = new Set(rows.filter((row) => !row.removed).map((row) => row.supermarketId));
+    const supermarket = supermarkets.find((store) => store.id && !used.has(store.id));
+    if (!supermarket?.id) return setError("Ya has añadido todos los supermercados disponibles.");
+    setRows((current) => [
+      ...current,
+      {
+        key: uid(),
+        supermarketId: supermarket.id!,
+        price: 0,
+        packageAmount: 1,
+        packageUnit: "ud",
+        quantityPurchased: 1,
+        date: todayISO(),
+      },
+    ]);
+  }
+
+  function updateRow(key: string, patch: Partial<ProductOfferDraft>) {
+    setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+
+  async function saveOffers() {
+    if (!product.id) return;
+    setError("");
+    const active = rows.filter((row) => !row.removed);
+    if (active.some((row) => !row.supermarketId || row.price < 0 || row.packageAmount <= 0 || row.quantityPurchased <= 0))
+      return setError("Revisa el supermercado, el precio y el formato de cada fila.");
+    if (new Set(active.map((row) => row.supermarketId)).size !== active.length)
+      return setError("Cada supermercado solo puede aparecer una vez por producto.");
+
+    await db.transaction("rw", db.tickets, db.purchases, async () => {
+      const affectedTickets = new Set<number>();
+      for (const row of rows) {
+        if (row.removed) {
+          if (row.purchaseId) {
+            const stored = await db.purchases.get(row.purchaseId);
+            if (stored) affectedTickets.add(stored.ticketId);
+            await db.purchases.delete(row.purchaseId);
+          }
+          continue;
+        }
+        const normalized = normalizeUnitPrice(
+          row.price,
+          0,
+          row.quantityPurchased,
+          row.packageAmount,
+          row.packageUnit,
+        );
+        if (row.purchaseId) {
+          const stored = await db.purchases.get(row.purchaseId);
+          if (stored) affectedTickets.add(stored.ticketId);
+          await db.purchases.update(row.purchaseId, {
+            supermarketId: row.supermarketId,
+            date: row.date,
+            price: row.price,
+            discount: 0,
+            quantityPurchased: row.quantityPurchased,
+            packageAmount: row.packageAmount,
+            packageUnit: row.packageUnit,
+            normalizedUnitPrice: normalized.value,
+            normalizedUnit: normalized.unit,
+          });
+        } else {
+          const ticketId = await db.tickets.add({
+            supermarketId: row.supermarketId,
+            date: row.date,
+            total: row.price,
+            createdAt: new Date().toISOString(),
+          });
+          affectedTickets.add(ticketId);
+          await db.purchases.add({
+            ticketId,
+            productId: product.id!,
+            supermarketId: row.supermarketId,
+            date: row.date,
+            rawName: product.name,
+            quantityPurchased: row.quantityPurchased,
+            packageAmount: row.packageAmount,
+            packageUnit: row.packageUnit,
+            price: row.price,
+            discount: 0,
+            normalizedUnitPrice: normalized.value,
+            normalizedUnit: normalized.unit,
+          });
+        }
+      }
+      for (const ticketId of affectedTickets) {
+        const remaining = await db.purchases.where("ticketId").equals(ticketId).toArray();
+        if (!remaining.length) await db.tickets.delete(ticketId);
+        else
+          await db.tickets.update(ticketId, {
+            total: remaining.reduce((sum, purchase) => sum + Math.max(0, purchase.price - purchase.discount), 0),
+          });
+      }
+    });
+    onClose();
+  }
+
+  return (
+    <ModalPortal>
+      <div className="modal-backdrop" role="presentation">
+        <div className="modal product-offers-modal" role="dialog" aria-modal="true" aria-label={`Editar precios de ${product.name}`}>
+          <div className="modal-head">
+            <div>
+              <span className="eyebrow">UN PRODUCTO, VARIOS SUPERMERCADOS</span>
+              <h2>{product.name}</h2>
+              <p>Cada supermercado conserva su propio precio y formato sin duplicar el producto.</p>
+            </div>
+            <button className="icon-btn" type="button" onClick={onClose}><X size={20} /></button>
+          </div>
+          <div className="offer-editor-list">
+            {rows.filter((row) => !row.removed).map((row) => (
+              <div className="offer-editor-row" key={row.key}>
+                <label>Supermercado
+                  <select disabled={Boolean(row.purchaseId)} value={row.supermarketId} onChange={(event) => updateRow(row.key, { supermarketId: Number(event.target.value) })}>
+                    {supermarkets.map((store) => <option key={store.id} value={store.id}>{store.name}{store.locality ? ` · ${store.locality}` : ""}</option>)}
+                  </select>
+                </label>
+                <label>Precio total
+                  <input type="number" min="0" step="0.01" value={row.price} onChange={(event) => updateRow(row.key, { price: parseNumber(event.target.value) })} />
+                </label>
+                <label>Cantidad
+                  <input type="number" min="0.01" step="0.01" value={row.packageAmount} onChange={(event) => updateRow(row.key, { packageAmount: parseNumber(event.target.value) })} />
+                </label>
+                <label>Formato
+                  <select value={row.packageUnit} onChange={(event) => updateRow(row.key, { packageUnit: event.target.value as PackageUnit })}>
+                    <option value="g">g</option><option value="kg">kg</option><option value="ml">ml</option><option value="l">l</option><option value="ud">ud</option>
+                  </select>
+                </label>
+                <label>Unidades
+                  <input type="number" min="1" step="1" value={row.quantityPurchased} onChange={(event) => updateRow(row.key, { quantityPurchased: parseNumber(event.target.value) })} />
+                </label>
+                <label>Fecha
+                  <input type="date" value={row.date} onChange={(event) => updateRow(row.key, { date: event.target.value })} />
+                </label>
+                <button className="icon-btn danger" type="button" title="Eliminar precio de este supermercado" onClick={() => updateRow(row.key, { removed: true })}><Trash2 size={16} /></button>
+              </div>
+            ))}
+            {!rows.some((row) => !row.removed) && <Empty text="Añade un supermercado para registrar su precio." />}
+          </div>
+          <button className="ghost add-offer-button" type="button" onClick={addStore}><Plus size={16} /> Añadir otro supermercado</button>
+          <div className="modal-footer">
+            <span className="error">{error}</span>
+            <div><button className="ghost" type="button" onClick={onClose}>Cancelar</button><button className="primary" type="button" onClick={() => void saveOffers()}><Save size={17} /> Guardar cambios</button></div>
+          </div>
+        </div>
+      </div>
+    </ModalPortal>
   );
 }
 
