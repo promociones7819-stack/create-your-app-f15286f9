@@ -870,6 +870,19 @@ button {
 .product-identity-fields .inline-field {
   min-width: 0;
 }
+.barcode-field > span {
+  display: flex;
+  gap: 6px;
+}
+.barcode-field > span input {
+  min-width: 0;
+}
+.barcode-field > span button {
+  flex: 0 0 auto;
+  min-height: 39px;
+  padding: 0 8px;
+  font-size: 9px;
+}
 .recommendation-badge {
   width: fit-content;
   padding: 4px 7px;
@@ -1775,6 +1788,52 @@ button {
 .split-row span {
   display: block;
 }
+.split-saving {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #e9f6ed;
+  color: #286344;
+  font-size: 11px;
+}
+.split-store-group {
+  overflow: hidden;
+  margin-top: 10px;
+  border: 1px solid #e0e7e2;
+  border-radius: 11px;
+}
+.split-store-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  background: #f0f5f2;
+  color: #28513d;
+}
+.split-store-head span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.split-store-group .split-row {
+  margin: 0;
+  padding: 10px 11px;
+  border: 0;
+  border-top: 1px solid #e8ece9;
+  border-radius: 0;
+}
+.split-missing {
+  margin: 12px 0 0;
+  color: #8a6540;
+  font-size: 10px;
+  font-weight: 700;
+}
 .split-row strong {
   font-size: 13px;
 }
@@ -1967,6 +2026,32 @@ button {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+}
+.location-setting {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) minmax(220px, 0.8fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.location-setting h3,
+.location-setting p {
+  margin: 0;
+}
+.location-setting p {
+  margin-top: 3px;
+  color: #718078;
+  font-size: 11px;
+}
+@media (max-width: 760px) {
+  .location-setting {
+    grid-template-columns: auto 1fr;
+  }
+  .location-setting input,
+  .location-setting button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
 }
 .setting-card > svg {
   color: #426c57;

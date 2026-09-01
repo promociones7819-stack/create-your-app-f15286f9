@@ -368,7 +368,12 @@ export const Route = createFileRoute("/api/offers")({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+        const searchParams = new URL(request.url).searchParams;
+        const query = searchParams.get("q")?.trim() ?? "";
+        const requestedLocation = searchParams.get("location")?.trim().slice(0, 100);
+        const searchArea = requestedLocation
+          ? { center: requestedLocation, radiusKm: 25, municipalities: [requestedLocation] }
+          : SEARCH_AREA;
         if (query.length < 2 || query.length > 80) {
           return Response.json(
             { error: "El producto debe tener entre 2 y 80 caracteres." },
@@ -399,8 +404,8 @@ export const Route = createFileRoute("/api/offers")({
           {
             query,
             checkedAt: new Date().toISOString(),
-            location: `Radio de ${SEARCH_AREA.radiusKm} km desde ${SEARCH_AREA.center}`,
-            searchArea: SEARCH_AREA,
+            location: `Zona de referencia: ${searchArea.center}`,
+            searchArea,
             offers,
             warnings,
             sources: [
@@ -410,9 +415,9 @@ export const Route = createFileRoute("/api/offers")({
                 url: `${EROSKI_SEARCH}?q=${encodeURIComponent(query)}`,
               },
               {
-                supermarket: "Carrefour Express Getxo",
-                label: "Ver ofertas de la tienda",
-                url: "https://www.carrefour.es/tiendas-carrefour/supermercados/carrefour-express/getxo_-_s.aspx",
+                supermarket: "Carrefour",
+                label: "Consultar tiendas y ofertas de la zona",
+                url: "https://www.carrefour.es/tiendas-carrefour/",
               },
               {
                 supermarket: "DIA",

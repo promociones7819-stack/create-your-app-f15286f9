@@ -212,6 +212,7 @@ const BACKUP_FOLDER_SETTING = "backup-folder";
 const INTERNAL_BACKUP_SETTING = "automatic-backup";
 const LAST_BACKUP_STATUS_SETTING = "automatic-backup-status";
 const AUTOMATIC_BACKUP_FILENAME = "smartmarket-backup-ultima.json";
+const PRICE_LOCATION_SETTING = "price-search-location";
 let automaticBackupInFlight: Promise<AutoBackupStatus> | null = null;
 
 function purchaseStoreName(value?: string | null) {
@@ -430,18 +431,14 @@ function Topbar() {
 }
 
 function Dashboard({ onGo }: { onGo: (v: View) => void }) {
-  const tickets = useLiveQuery(() => db.tickets.toArray(), []) ?? [];
   const products = useLiveQuery(() => db.products.toArray(), []) ?? [];
   const purchases = useLiveQuery(() => db.purchases.toArray(), []) ?? [];
   const supermarkets = useLiveQuery(() => db.supermarkets.toArray(), []) ?? [];
 
-  const thisMonth = todayISO().slice(0, 7);
-  const monthSpend = tickets
-    .filter((t) => t.date.startsWith(thisMonth))
-    .reduce((a, b) => a + b.total, 0);
   const enriched = enrichPurchases(purchases, products, supermarkets);
   const alerts = detectAlerts(enriched);
   const rated = products.filter((p) => p.rating > 0).length;
+  const bestDrop = alerts.find((alert) => alert.kind === "down");
 
   return (
     <section className="page">
@@ -460,11 +457,9 @@ function Dashboard({ onGo }: { onGo: (v: View) => void }) {
           </button>
         </div>
         <div className="metric-feature">
-          <span>Gasto este mes</span>
-          <strong>{money(monthSpend)}</strong>
-          <small>
-            {tickets.filter((t) => t.date.startsWith(thisMonth)).length} compras registradas
-          </small>
+          <span>Mejor oportunidad detectada</span>
+          <strong>{bestDrop ? "Precio más bajo" : "Añade precios"}</strong>
+          <small>{bestDrop?.title ?? "Compara tiendas para encontrar la mejor compra"}</small>
         </div>
       </div>
 
@@ -544,9 +539,6 @@ function ProductPriceWorkspace() {
   const products = useLiveQuery(() => db.products.toArray(), []) ?? [];
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showEditor, setShowEditor] = useState(false);
-  const ticketSpend = tickets.reduce((sum, ticket) => sum + ticket.total, 0);
-  const currentMonth = todayISO().slice(0, 7);
-  const monthTickets = tickets.filter((ticket) => ticket.date.startsWith(currentMonth));
 
   const openNew = () => {
     setEditingId(null);
@@ -589,14 +581,14 @@ function ProductPriceWorkspace() {
       </div>
 
       <div className="metrics-grid ticket-metrics">
-        <Metric icon={ReceiptText} label="Compras este mes" value={String(monthTickets.length)} />
+        <Metric icon={ReceiptText} label="Tickets con precios" value={String(tickets.length)} />
         <Metric icon={ShoppingBasket} label="Precios guardados" value={String(purchases.length)} />
         <Metric
           icon={Store}
           label="Supermercados"
           value={String(new Set(tickets.map((ticket) => ticket.supermarketId)).size)}
         />
-        <Metric icon={BarChart3} label="Gasto registrado" value={money(ticketSpend)} />
+        <Metric icon={BarChart3} label="Productos comparables" value={String(products.length)} />
       </div>
 
       {tickets.length === 0 ? (
@@ -1345,6 +1337,7 @@ function ProductsView() {
   const [newName, setNewName] = useState("");
   const [newBrand, setNewBrand] = useState("");
   const [newGenericName, setNewGenericName] = useState("");
+  const [newBarcode, setNewBarcode] = useState("");
   const [newCategory, setNewCategory] = useState<string>(PRODUCT_CATEGORIES[5]);
   const [newPurchaseUrl, setNewPurchaseUrl] = useState("");
   const [productError, setProductError] = useState("");
@@ -1429,6 +1422,35 @@ function ProductsView() {
   async function updateCategory(product: Product, category: string) {
     if (product.id) await db.products.update(product.id, { category });
   }
+  async function updateBarcode(product: Product, value: string) {
+    if (!product.id) return;
+    const barcode = value.replace(/\D/g, "");
+    if (barcode && products.some((candidate) => candidate.id !== product.id && candidate.barcode === barcode))
+      return alert("Ese código de barras ya pertenece a otro producto.");
+    await db.products.update(product.id, { barcode });
+  }
+  async function completeFromBarcode(product: Product) {
+    if (!product.id || !product.barcode) return alert("Escribe primero un código de barras.");
+    try {
+      const response = await fetch(
+        `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(product.barcode)}?fields=product_name_es,product_name,brands,categories_tags`,
+      );
+      if (!response.ok) throw new Error("Consulta no disponible");
+      const payload = (await response.json()) as {
+        status?: number;
+        product?: { product_name_es?: string; product_name?: string; brands?: string; categories_tags?: string[] };
+      };
+      if (payload.status !== 1 || !payload.product) return alert("No se encontró ese producto.");
+      const name = payload.product.product_name_es || payload.product.product_name;
+      await db.products.update(product.id, {
+        ...(name ? { name } : {}),
+        ...(payload.product.brands ? { brand: payload.product.brands.split(",")[0]?.trim() ?? "" } : {}),
+        ...(name && !product.genericName ? { genericName: name } : {}),
+      });
+    } catch {
+      alert("No se pudo consultar Open Food Facts. Inténtalo de nuevo.");
+    }
+  }
   function cleanPurchaseUrl(value: string) {
     const clean = value.trim();
     if (!clean) return "";
@@ -1460,6 +1482,7 @@ function ProductsView() {
     const name = newName.trim();
     const brand = newBrand.trim();
     const genericName = newGenericName.trim() || name;
+    const barcode = newBarcode.replace(/\D/g, "");
     const purchaseUrl = cleanPurchaseUrl(newPurchaseUrl);
     if (!name) return setProductError("Escribe el nombre del producto.");
     if (!isValidPurchaseUrl(purchaseUrl))
@@ -1470,6 +1493,8 @@ function ProductsView() {
         comparableText(product.brand) === comparableText(brand),
     );
     if (duplicate) return setProductError("Ese producto y marca ya están guardados.");
+    if (barcode && products.some((product) => product.barcode === barcode))
+      return setProductError("Ese código de barras ya está guardado.");
     try {
       await db.products.add({
         name,
@@ -1478,11 +1503,13 @@ function ProductsView() {
         category: newCategory,
         rating: 0,
         notes: "",
+        ...(barcode ? { barcode } : {}),
         ...(purchaseUrl ? { purchaseUrl } : {}),
       });
       setNewName("");
       setNewBrand("");
       setNewGenericName("");
+      setNewBarcode("");
       setNewCategory(PRODUCT_CATEGORIES[5]);
       setNewPurchaseUrl("");
       setShowNewProduct(false);
@@ -1584,6 +1611,10 @@ function ProductsView() {
               <input value={newGenericName} onChange={(event) => setNewGenericName(event.target.value)} placeholder="Cápsulas de café" />
             </label>
             <label>
+              Código de barras
+              <input inputMode="numeric" value={newBarcode} onChange={(event) => setNewBarcode(event.target.value.replace(/\D/g, ""))} placeholder="8412345678901" />
+            </label>
+            <label>
               Categoría
               <select value={newCategory} onChange={(event) => setNewCategory(event.target.value)}>
                 {PRODUCT_CATEGORIES.map((category) => <option key={category}>{category}</option>)}
@@ -1624,7 +1655,6 @@ function ProductsView() {
             const pp = purchases
               .filter((p) => p.productId === product.id)
               .sort((a, b) => b.date.localeCompare(a.date));
-            const latest = pp[0];
             const latestByMarket = Array.from(
               pp.reduce((offers, purchase) => {
                 if (!offers.has(purchase.supermarketId)) offers.set(purchase.supermarketId, purchase);
@@ -1693,6 +1723,21 @@ function ProductsView() {
                           void updateProductIdentity(product, "brand", event.target.value)
                         }
                       />
+                    </label>
+                    <label className="inline-field barcode-field">
+                      Código de barras
+                      <span>
+                        <input
+                          inputMode="numeric"
+                          defaultValue={product.barcode ?? ""}
+                          key={`${product.id}-barcode-${product.barcode ?? ""}`}
+                          placeholder="Escanear o escribir"
+                          onBlur={(event) => void updateBarcode(product, event.target.value)}
+                        />
+                        <button className="ghost" type="button" title="Completar desde Open Food Facts" onClick={() => void completeFromBarcode(product)}>
+                          <ScanText size={14} /> Buscar
+                        </button>
+                      </span>
                     </label>
                     {product.purchaseUrl && (
                       <span className="recommendation-badge">
@@ -1778,11 +1823,6 @@ function ProductsView() {
                 <button className="icon-btn danger" onClick={() => deleteProduct(product)}>
                   <Trash2 size={16} />
                 </button>
-                <ProductPriceEditor
-                  product={product}
-                  latest={latest}
-                  supermarkets={supermarkets}
-                />
               </article>
             );
           })}
@@ -1815,7 +1855,24 @@ type ProductOfferDraft = {
   quantityPurchased: number;
   date: string;
   removed?: boolean;
+  originalSignature?: string;
 };
+
+function productOfferSignature(
+  offer: Pick<
+    ProductOfferDraft,
+    "supermarketId" | "price" | "packageAmount" | "packageUnit" | "quantityPurchased" | "date"
+  >,
+) {
+  return [
+    offer.supermarketId,
+    offer.price,
+    offer.packageAmount,
+    offer.packageUnit,
+    offer.quantityPurchased,
+    offer.date,
+  ].join("|");
+}
 
 function ProductOffersEditor({
   product,
@@ -1839,16 +1896,19 @@ function ProductOffersEditor({
       .values(),
   );
   const [rows, setRows] = useState<ProductOfferDraft[]>(() =>
-    latestOffers.map((offer) => ({
-      key: uid(),
-      ...(offer.id ? { purchaseId: offer.id } : {}),
-      supermarketId: offer.supermarketId,
-      price: offer.price,
-      packageAmount: offer.packageAmount,
-      packageUnit: offer.packageUnit,
-      quantityPurchased: offer.quantityPurchased,
-      date: offer.date,
-    })),
+    latestOffers.map((offer) => {
+      const draft = {
+        key: uid(),
+        ...(offer.id ? { purchaseId: offer.id } : {}),
+        supermarketId: offer.supermarketId,
+        price: offer.price,
+        packageAmount: offer.packageAmount,
+        packageUnit: offer.packageUnit,
+        quantityPurchased: offer.quantityPurchased,
+        date: offer.date,
+      };
+      return { ...draft, originalSignature: productOfferSignature(draft) };
+    }),
   );
   const [error, setError] = useState("");
 
@@ -1901,21 +1961,8 @@ function ProductOffersEditor({
           row.packageAmount,
           row.packageUnit,
         );
-        if (row.purchaseId) {
-          const stored = await db.purchases.get(row.purchaseId);
-          if (stored) affectedTickets.add(stored.ticketId);
-          await db.purchases.update(row.purchaseId, {
-            supermarketId: row.supermarketId,
-            date: row.date,
-            price: row.price,
-            discount: 0,
-            quantityPurchased: row.quantityPurchased,
-            packageAmount: row.packageAmount,
-            packageUnit: row.packageUnit,
-            normalizedUnitPrice: normalized.value,
-            normalizedUnit: normalized.unit,
-          });
-        } else {
+        const changed = !row.purchaseId || row.originalSignature !== productOfferSignature(row);
+        if (changed) {
           const ticketId = await db.tickets.add({
             supermarketId: row.supermarketId,
             date: row.date,
@@ -1959,7 +2006,7 @@ function ProductOffersEditor({
             <div>
               <span className="eyebrow">UN PRODUCTO, VARIOS SUPERMERCADOS</span>
               <h2>{product.name}</h2>
-              <p>Cada supermercado conserva su propio precio y formato sin duplicar el producto.</p>
+              <p>Cada cambio crea una nueva observación y conserva el histórico anterior.</p>
             </div>
             <button className="icon-btn" type="button" onClick={onClose}><X size={20} /></button>
           </div>
@@ -1967,7 +2014,7 @@ function ProductOffersEditor({
             {rows.filter((row) => !row.removed).map((row) => (
               <div className="offer-editor-row" key={row.key}>
                 <label>Supermercado
-                  <select disabled={Boolean(row.purchaseId)} value={row.supermarketId} onChange={(event) => updateRow(row.key, { supermarketId: Number(event.target.value) })}>
+                  <select value={row.supermarketId} onChange={(event) => updateRow(row.key, { supermarketId: Number(event.target.value) })}>
                     {supermarkets.map((store) => <option key={store.id} value={store.id}>{store.name}{store.locality ? ` · ${store.locality}` : ""}</option>)}
                   </select>
                 </label>
@@ -3118,6 +3165,11 @@ function StoreProductDirectory({
 }
 
 function PublicOffersPanel({ query }: { query: string }) {
+  const locationSetting = useLiveQuery(() => db.appSettings.get(PRICE_LOCATION_SETTING), []);
+  const priceLocation =
+    typeof locationSetting?.value === "string" && locationSetting.value.trim()
+      ? locationSetting.value.trim()
+      : "Medina de Pomar";
   const [result, setResult] = useState<PublicOffersResponse>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -3132,7 +3184,7 @@ function PublicOffersPanel({ query }: { query: string }) {
       setLoading(true);
       setError("");
       try {
-        const response = await fetch(`/api/offers?q=${encodeURIComponent(query)}`, {
+        const response = await fetch(`/api/offers?q=${encodeURIComponent(query)}&location=${encodeURIComponent(priceLocation)}`, {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error("No se han podido consultar las ofertas.");
@@ -3149,7 +3201,7 @@ function PublicOffersPanel({ query }: { query: string }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [priceLocation, query]);
 
   if (!query) return null;
   const comparableOffers = result?.offers.filter((offer) => offer.comparablePrice !== null) ?? [];
@@ -3327,6 +3379,25 @@ function ShoppingListView() {
     ];
   });
   const splitTotal = splitPlan.reduce((sum, row) => sum + row.cost, 0);
+  const completeStorePlans = storePlans.filter((plan) => plan.coverage === activeItems.length);
+  const bestCompleteStore = [...completeStorePlans].sort((a, b) => a.total - b.total)[0];
+  const splitSavings = bestCompleteStore ? Math.max(0, bestCompleteStore.total - splitTotal) : 0;
+  const splitByStore = Array.from(
+    splitPlan.reduce((groups, row) => {
+      const key = row.supermarket?.id ?? 0;
+      const group = groups.get(key) ?? {
+        supermarket: row.supermarket,
+        rows: [] as typeof splitPlan,
+        total: 0,
+      };
+      group.rows.push(row);
+      group.total += row.cost;
+      groups.set(key, group);
+      return groups;
+    }, new Map<number, { supermarket: Supermarket | undefined; rows: typeof splitPlan; total: number }>()),
+  )
+    .map(([, group]) => group)
+    .sort((a, b) => b.total - a.total);
 
   async function addItem() {
     const selectedId = Number(productId);
@@ -3464,25 +3535,47 @@ function ShoppingListView() {
             <div className="panel split-plan">
               <div className="panel-title">
                 <div>
-                  <h3>Compra más barata</h3>
-                  <p>Repartiendo productos entre tiendas.</p>
+                  <h3>Mejor compra recomendada</h3>
+                  <p>El supermercado más barato para cada artículo.</p>
                 </div>
                 <strong>{money(splitTotal)}</strong>
               </div>
-              {splitPlan.map((row) => (
-                <div className="split-row" key={row.item.id}>
-                  <div>
-                    <strong>{row.product.genericName || row.product.name}</strong>
-                    <span>
-                      {row.item.quantity} × {money(packagePrice(row.purchase))}
-                    </span>
+              {bestCompleteStore && (
+                <div className="split-saving">
+                  <Sparkles size={16} />
+                  <span>
+                    Ahorras <strong>{money(splitSavings)}</strong> frente a comprar toda la lista
+                    en {bestCompleteStore.supermarket.name}.
+                  </span>
+                </div>
+              )}
+              {splitByStore.map((group) => (
+                <div className="split-store-group" key={group.supermarket?.id ?? "unknown"}>
+                  <div className="split-store-head">
+                    <span><Store size={15} /> {group.supermarket?.name || "Supermercado"}</span>
+                    <strong>{money(group.total)}</strong>
                   </div>
-                  <div>
-                    <strong>{row.supermarket?.name || "Supermercado"}</strong>
-                    <span>{money(row.cost)}</span>
-                  </div>
+                  {group.rows.map((row) => (
+                    <div className="split-row" key={row.item.id}>
+                      <div>
+                        <strong>{row.product.genericName || row.product.name}</strong>
+                        <span>
+                          {row.item.quantity} × {money(packagePrice(row.purchase))} · {row.purchase.packageAmount} {row.purchase.packageUnit}
+                        </span>
+                      </div>
+                      <div>
+                        <span>Subtotal</span>
+                        <strong>{money(row.cost)}</strong>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ))}
+              {splitPlan.length < activeItems.length && (
+                <p className="split-missing">
+                  Faltan precios para {activeItems.length - splitPlan.length} artículos de la lista.
+                </p>
+              )}
             </div>
           )}
         </aside>
@@ -4139,7 +4232,6 @@ function MedinaView() {
     () => purchases.filter((purchase) => medinaIds.has(purchase.supermarketId)),
     [purchases, medinaIds],
   );
-  const medinaSpend = medinaTickets.reduce((sum, ticket) => sum + ticket.total, 0);
 
   const comparisons = useMemo(() => {
     const productById = new Map(
@@ -4223,7 +4315,7 @@ function MedinaView() {
           value={String(MEDINA_SUPERMARKETS.length)}
         />
         <Metric icon={ReceiptText} label="Compras en Medina" value={String(medinaTickets.length)} />
-        <Metric icon={ShoppingBasket} label="Gasto registrado" value={money(medinaSpend)} />
+        <Metric icon={ShoppingBasket} label="Precios registrados" value={String(medinaPurchases.length)} />
         <Metric
           icon={Scale}
           label="Diferencia media"
@@ -4249,7 +4341,9 @@ function MedinaView() {
           const storeTickets = store?.id
             ? medinaTickets.filter((ticket) => ticket.supermarketId === store.id)
             : [];
-          const spend = storeTickets.reduce((sum, ticket) => sum + ticket.total, 0);
+          const storePriceCount = store?.id
+            ? medinaPurchases.filter((purchase) => purchase.supermarketId === store.id).length
+            : 0;
           const latest = [...storeTickets].sort((a, b) => b.date.localeCompare(a.date))[0];
           const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${directoryStore.name}, ${directoryStore.address}, Medina de Pomar`)}`;
           return (
@@ -4269,8 +4363,8 @@ function MedinaView() {
                   <strong>{storeTickets.length}</strong>
                 </div>
                 <div>
-                  <span>Gasto</span>
-                  <strong>{money(spend)}</strong>
+                  <span>Precios</span>
+                  <strong>{storePriceCount}</strong>
                 </div>
                 <div>
                   <span>Última compra</span>
@@ -4686,6 +4780,8 @@ function SettingsView() {
   const [backupFolder, setBackupFolder] = useState<LocalDirectoryHandle | null>(null);
   const [sharedPreview, setSharedPreview] = useState<SharedListPreview>();
   const [selectedSharedProducts, setSelectedSharedProducts] = useState<number[]>([]);
+  const locationSetting = useLiveQuery(() => db.appSettings.get(PRICE_LOCATION_SETTING), []);
+  const [priceLocation, setPriceLocation] = useState("Medina de Pomar");
   const canChooseFolder = typeof window !== "undefined" && "showDirectoryPicker" in window;
   const automaticBackup = useLiveQuery(
     () => db.appSettings.get(INTERNAL_BACKUP_SETTING),
@@ -4702,6 +4798,17 @@ function SettingsView() {
       if (folder?.getFileHandle) setBackupFolder(folder);
     });
   }, []);
+
+  useEffect(() => {
+    if (typeof locationSetting?.value === "string") setPriceLocation(locationSetting.value);
+  }, [locationSetting?.value]);
+
+  async function savePriceLocation() {
+    const value = priceLocation.trim() || "Medina de Pomar";
+    await db.appSettings.put({ key: PRICE_LOCATION_SETTING, value, updatedAt: new Date().toISOString() });
+    setPriceLocation(value);
+    setStatus("Ubicación de comparación guardada.");
+  }
 
   async function shareProducts() {
     try {
@@ -5002,6 +5109,15 @@ function SettingsView() {
           <h2>Ajustes y copia de seguridad</h2>
           <p>No necesitas una cuenta. Exporta un único archivo para llevarte todo tu histórico.</p>
         </div>
+      </div>
+      <div className="panel location-setting">
+        <MapPin size={24} />
+        <div>
+          <h3>Zona para comparar precios</h3>
+          <p>Se utilizará como referencia en las consultas de precios públicos.</p>
+        </div>
+        <input value={priceLocation} onChange={(event) => setPriceLocation(event.target.value)} placeholder="Municipio o código postal" />
+        <button className="primary" type="button" onClick={() => void savePriceLocation()}><Save size={16} /> Guardar</button>
       </div>
       <div className="settings-grid">
         <div className="panel setting-card">

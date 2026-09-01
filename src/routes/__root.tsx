@@ -77,11 +77,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "SmartMarket · Comparador de supermercados" },
+      { name: "description", content: "Compara precios y encuentra la mejor compra para cada artículo." },
+      { name: "theme-color", content: "#28513d" },
+      { property: "og:title", content: "SmartMarket" },
+      { property: "og:description", content: "Compara tu lista por supermercado y elige el mejor precio artículo por artículo." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:site", content: "@Lovable" },
@@ -92,6 +92,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         href: appCss,
       },
       { rel: "icon", type: "image/png", href: "/favicon.png" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
     ],
   }),
   shellComponent: RootShell,
@@ -102,7 +103,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="es">
       <head>
         <HeadContent />
       </head>
@@ -116,6 +117,33 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    let reloading = false;
+    const reloadWithNewVersion = () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    };
+    const checkForUpdates = () => {
+      void navigator.serviceWorker.ready.then((registration) => registration.update());
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", reloadWithNewVersion);
+    void navigator.serviceWorker
+      .register("/sw.js", { updateViaCache: "none" })
+      .then((registration) => registration.update())
+      .catch(() => undefined);
+    document.addEventListener("visibilitychange", checkForUpdates);
+    window.addEventListener("focus", checkForUpdates);
+    const interval = window.setInterval(checkForUpdates, 60 * 60 * 1000);
+    return () => {
+      navigator.serviceWorker.removeEventListener("controllerchange", reloadWithNewVersion);
+      document.removeEventListener("visibilitychange", checkForUpdates);
+      window.removeEventListener("focus", checkForUpdates);
+      window.clearInterval(interval);
+    };
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

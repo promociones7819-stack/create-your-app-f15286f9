@@ -1,0 +1,18 @@
+{
+  "name": "SmartMarket · Comparador de supermercados",
+  "short_name": "SmartMarket",
+  "description": "Compara precios y encuentra la mejor compra para cada artículo.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f5",
+  "theme_color": "#28513d",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

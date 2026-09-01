@@ -1,0 +1,55 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "SmartMarket",
+  "version": "1.0.0",
+  "identifier": "com.smartmarket.comparador",
+  "build": {
+    "frontendDist": "../dist-native",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build:native"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SmartMarket",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 860,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc1QjJGMjJDMzc3MEM0MzgKUldRNHhIQTNMUEt5ZFg0NmdKL21HRkVUU3pNVXdINERDNWdVQTBRc1VrMGZmZUdNekxUdGdPd08K",
+      "endpoints": [
+        "https://github.com/promociones7819-stack/create-your-app-f15286f9/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
