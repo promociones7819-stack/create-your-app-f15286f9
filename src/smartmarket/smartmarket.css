@@ -1373,6 +1373,80 @@ button {
   font-size: 9px;
   line-height: 1.35;
 }
+.auto-catalog-status {
+  margin-bottom: 16px;
+}
+.price-history-editor {
+  grid-column: 1 / -1;
+  padding-top: 12px;
+  border-top: 1px solid #e5eae7;
+}
+.price-history-editor.open {
+  padding: 13px;
+  border: 1px solid #cfe0d5;
+  border-radius: 11px;
+  background: #f4f9f5;
+}
+.price-history-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.price-history-editor-head strong,
+.price-history-editor-head span {
+  display: block;
+}
+.price-history-editor-head strong {
+  color: #254b39;
+  font-size: 11px;
+}
+.price-history-editor-head span {
+  margin-top: 3px;
+  color: #718078;
+  font-size: 9px;
+}
+.price-history-editor-head button {
+  flex: 0 0 auto;
+}
+.price-history-form {
+  display: grid;
+  grid-template-columns: 0.8fr 0.8fr 1.25fr 1fr minmax(190px, auto);
+  align-items: end;
+  gap: 10px;
+  margin-top: 12px;
+}
+.price-history-form > label {
+  display: grid;
+  gap: 5px;
+  color: #5f6d65;
+  font-size: 10px;
+  font-weight: 800;
+}
+.price-history-form > label > input,
+.price-history-form > label > select {
+  width: 100%;
+  min-height: 39px;
+  border: 1px solid #d4ddd7;
+  border-radius: 9px;
+  background: white;
+  padding: 0 9px;
+}
+.price-history-save {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+.price-history-save > span,
+.price-history-success {
+  color: #397052;
+  font-size: 9px;
+  font-weight: 700;
+}
+.price-history-success {
+  display: block;
+  margin-top: 7px;
+}
 .search {
   width: 280px;
 }
@@ -3217,6 +3291,13 @@ button {
   .history-summary-grid {
     grid-template-columns: 1fr;
   }
+  .price-history-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .price-history-save {
+    grid-column: 1 / -1;
+    justify-items: start;
+  }
 }
 @media (max-width: 1100px) {
   .medina-store-grid {
@@ -3253,6 +3334,16 @@ button {
   .product-row {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+  .price-history-editor-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .price-history-form {
+    grid-template-columns: 1fr;
+  }
+  .price-history-save {
+    grid-column: auto;
   }
   .page-heading {
     flex-direction: column;
