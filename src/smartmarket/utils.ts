@@ -1,4 +1,4 @@
-import type { PackageUnit } from "./types";
+import type { PackageUnit, Product } from "./types";
 
 export function money(value: number) {
   return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(value || 0);
@@ -35,7 +35,45 @@ export function uid() {
 }
 
 export function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+// Date-only observations still have a deterministic order within the same day.
+export function newestFirst(a: { date: string; id?: number }, b: { date: string; id?: number }) {
+  return b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0);
+}
+
+export function equivalenceKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("es-ES")
+    .replace(/\s+/g, " ");
+}
+
+export function canonicalProducts(products: Product[]) {
+  const labels = new Map<string, string>();
+  return products.map((product) => {
+    const label = product.genericName.trim().replace(/\s+/g, " ");
+    const key = equivalenceKey(label);
+    if (!labels.has(key)) labels.set(key, label);
+    return { ...product, genericName: labels.get(key)! };
+  });
+}
+
+export function productCategory(name: string, category: string) {
+  // Repair only broad/unknown categories, never a deliberate specific category.
+  if (!["", "alimentacion", "sin categoria", "otros"].includes(equivalenceKey(category)))
+    return category;
+  if (
+    /\b(detergente|suavizante|lavavajillas|desengrasante|lejia|kh\s*-?\s*7)\b/.test(
+      equivalenceKey(name),
+    )
+  )
+    return "Limpieza";
+  return category || "Otros";
 }
 
 export function parseNumber(value: string | number) {

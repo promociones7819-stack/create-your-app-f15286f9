@@ -1,4 +1,5 @@
 import Dexie, { type Table } from "dexie";
+import { productCategory } from "./utils";
 import type {
   Equivalence,
   Product,
@@ -43,6 +44,16 @@ class SmartMarketDB extends Dexie {
     this.version(5).stores({
       appSettings: "&key, updatedAt",
     });
+    this.version(6)
+      .stores({})
+      .upgrade((tx) =>
+        tx
+          .table("products")
+          .toCollection()
+          .modify((product: Product) => {
+            product.category = productCategory(product.name, product.category);
+          }),
+      );
   }
 }
 
@@ -105,16 +116,19 @@ export const MEDINA_SUPERMARKETS = [
 ] as const;
 
 export async function ensureDefaults() {
-  const existing = await db.supermarkets.toArray();
-  const genericMissing = DEFAULT_SUPERMARKETS.filter(
-    (name) => !existing.some((store) => store.name === name && !store.locality),
-  ).map((name) => ({ name }));
-  const medinaMissing = MEDINA_SUPERMARKETS.filter(
-    (candidate) =>
-      !existing.some(
-        (store) => store.name === candidate.name && store.locality === candidate.locality,
-      ),
-  ).map(({ name, locality, address }) => ({ name, locality, address }));
-  if (genericMissing.length || medinaMissing.length)
-    await db.supermarkets.bulkAdd([...genericMissing, ...medinaMissing]);
+  // Serialize startup checks across StrictMode mounts and other tabs.
+  await db.transaction("rw", db.supermarkets, async () => {
+    const existing = await db.supermarkets.toArray();
+    const genericMissing = DEFAULT_SUPERMARKETS.filter(
+      (name) => !existing.some((store) => store.name === name && !store.locality),
+    ).map((name) => ({ name }));
+    const medinaMissing = MEDINA_SUPERMARKETS.filter(
+      (candidate) =>
+        !existing.some(
+          (store) => store.name === candidate.name && store.locality === candidate.locality,
+        ),
+    ).map(({ name, locality, address }) => ({ name, locality, address }));
+    if (genericMissing.length || medinaMissing.length)
+      await db.supermarkets.bulkAdd([...genericMissing, ...medinaMissing]);
+  });
 }

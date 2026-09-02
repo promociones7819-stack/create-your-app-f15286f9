@@ -53,6 +53,7 @@ import {
   YAxis,
 } from "recharts";
 import { db, ensureDefaults, MEDINA_SUPERMARKETS } from "./db";
+import { CatalogSync, CATALOG_ADMIN_EMAIL, catalogDeletionsKey } from "./catalog-sync";
 import { supabase } from "@/integrations/supabase/client";
 import { extractText } from "./ocr";
 import { parseReceiptText, type OcrLineDraft, type OcrResult } from "./parser";
@@ -73,6 +74,10 @@ import {
   pct,
   todayISO,
   uid,
+  newestFirst,
+  equivalenceKey,
+  productCategory,
+  canonicalProducts,
 } from "./utils";
 
 // dexie-react-hooks is intentionally imported as a separate package to keep all persistence local.
@@ -206,7 +211,7 @@ const PRODUCT_CATEGORIES = [
   "Otros",
 ] as const;
 
-const PUBLIC_CATALOG_ADMIN_EMAIL = "promociones7819@gmail.com";
+const PUBLIC_CATALOG_ADMIN_EMAIL = CATALOG_ADMIN_EMAIL;
 const AUTO_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
 const BACKUP_FOLDER_SETTING = "backup-folder";
 const INTERNAL_BACKUP_SETTING = "automatic-backup";
@@ -240,7 +245,7 @@ const emptyLine = (): TicketLineDraft => ({
   productName: "",
   genericName: "",
   brand: "",
-  category: "Alimentación",
+  category: "Otros",
   quantityPurchased: 1,
   packageAmount: 1,
   packageUnit: "ud",
@@ -253,6 +258,10 @@ function App() {
   const [ready, setReady] = useState(false);
   const [bootError, setBootError] = useState("");
   const [bootAttempt, setBootAttempt] = useState(0);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [view]);
 
   useEffect(() => {
     let active = true;
@@ -296,8 +305,7 @@ function App() {
       const previous = await db.appSettings.get(LAST_BACKUP_STATUS_SETTING);
       const previousStatus = previous?.value as AutoBackupStatus | undefined;
       const previousTime = previousStatus?.at ? Date.parse(previousStatus.at) : 0;
-      if (!previousTime || Date.now() - previousTime >= AUTO_BACKUP_INTERVAL_MS)
-        save("startup");
+      if (!previousTime || Date.now() - previousTime >= AUTO_BACKUP_INTERVAL_MS) save("startup");
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") save("page-hidden");
@@ -350,6 +358,8 @@ function App() {
       <Sidebar view={view} setView={setView} />
       <main className={`main-content view-${view}`}>
         <Topbar />
+        <LocalSaveNotice />
+        <CatalogSync publish={publishProductsToPublicCatalog} />
         {view === "dashboard" && <Dashboard onGo={setView} />}
         {view === "products" && <ProductsView />}
         {view === "public-catalog" && <PublicCatalogView />}
@@ -401,6 +411,8 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
           <button
             key={id}
             className={view === id ? "nav-item active" : "nav-item"}
+            aria-current={view === id ? "page" : undefined}
+            title={label}
             onClick={() => setView(id)}
           >
             <Icon size={19} /> {label}
@@ -410,8 +422,10 @@ function Sidebar({ view, setView }: { view: View; setView: (v: View) => void }) 
       <div className="privacy-card">
         <Database size={18} />
         <div>
-          <strong>100 % local</strong>
-          <span>Los productos y precios se guardan en este dispositivo.</span>
+          <strong>Compras privadas</strong>
+          <span>
+            Tus precios se guardan aquí. El catálogo público comparte solo fichas de productos.
+          </span>
         </div>
       </div>
     </aside>
@@ -428,6 +442,35 @@ function Topbar() {
       <span className="local-pill">● Datos locales</span>
     </header>
   );
+}
+
+function notifyLocalSave(message: string) {
+  window.dispatchEvent(new CustomEvent("smartmarket-saved", { detail: message }));
+}
+
+function LocalSaveNotice() {
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const saved = (event: Event) => {
+      setMessage((event as CustomEvent<string>).detail);
+      clearTimeout(timer);
+      timer = setTimeout(() => setMessage(""), 6_000);
+    };
+    window.addEventListener("smartmarket-saved", saved);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("smartmarket-saved", saved);
+    };
+  }, []);
+  return message ? (
+    <div className="local-save-notice" role="status">
+      <Check size={18} /> {message}
+      <button className="icon-btn" aria-label="Cerrar confirmación" onClick={() => setMessage("")}>
+        <X size={16} />
+      </button>
+    </div>
+  ) : null;
 }
 
 function Dashboard({ onGo }: { onGo: (v: View) => void }) {
@@ -500,20 +543,25 @@ function Dashboard({ onGo }: { onGo: (v: View) => void }) {
         <div className="panel">
           <div className="panel-title">
             <div>
-              <h3>Qué puede hacer ya</h3>
-              <p>Primera versión funcional.</p>
+              <h3>¿Qué necesitas hacer?</h3>
+              <p>Accede directamente a tus tareas habituales.</p>
             </div>
             <BarChart3 size={20} />
           </div>
-          <ul className="feature-list">
-            <li>Guardar compras, precios e imagen/PDF original en el dispositivo.</li>
-            <li>Editar productos, marcas, formatos, cantidades y descuentos.</li>
-            <li>Agrupar marcas diferentes como el mismo producto genérico.</li>
-            <li>Comparar automáticamente por €/kg, €/L o unidad.</li>
-            <li>Valorar productos con 1–5 estrellas.</li>
-            <li>Detectar subida de precio unitario y reducción de envase.</li>
-            <li>Leer recibos en imagen o PDF con OCR local y revisión previa.</li>
-          </ul>
+          <div className="quick-actions">
+            <button className="ghost" onClick={() => onGo("products")}>
+              <Plus size={20} /> Añadir o actualizar un precio
+            </button>
+            <button className="ghost" onClick={() => onGo("shopping-list")}>
+              <ListChecks size={20} /> Preparar la lista de la compra
+            </button>
+            <button className="ghost" onClick={() => onGo("history")}>
+              <History size={20} /> Consultar la evolución
+            </button>
+            <button className="ghost" onClick={() => onGo("public-catalog")}>
+              <Globe2 size={20} /> Explorar el catálogo público
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -580,74 +628,80 @@ function ProductPriceWorkspace() {
         </button>
       </div>
 
-      <div className="metrics-grid ticket-metrics">
-        <Metric icon={ReceiptText} label="Tickets con precios" value={String(tickets.length)} />
-        <Metric icon={ShoppingBasket} label="Precios guardados" value={String(purchases.length)} />
-        <Metric
-          icon={Store}
-          label="Supermercados"
-          value={String(new Set(tickets.map((ticket) => ticket.supermarketId)).size)}
-        />
-        <Metric icon={BarChart3} label="Productos comparables" value={String(products.length)} />
-      </div>
-
-      {tickets.length === 0 ? (
-        <div className="panel empty-large">
-          <ReceiptText size={36} />
-          <h3>Aún no has registrado precios</h3>
-          <p>Puedes leer un recibo con OCR local o introducir los productos directamente.</p>
-          <button className="primary" onClick={openNew}>
-            Añadir primeros productos
-          </button>
+      <details className="saved-observations">
+        <summary>Ver registros guardados · {tickets.length}</summary>
+        <div className="metrics-grid ticket-metrics">
+          <Metric icon={ReceiptText} label="Tickets con precios" value={String(tickets.length)} />
+          <Metric
+            icon={ShoppingBasket}
+            label="Precios guardados"
+            value={String(purchases.length)}
+          />
+          <Metric
+            icon={Store}
+            label="Supermercados"
+            value={String(new Set(tickets.map((ticket) => ticket.supermarketId)).size)}
+          />
+          <Metric icon={BarChart3} label="Productos comparables" value={String(products.length)} />
         </div>
-      ) : (
-        <div className="ticket-grid">
-          {tickets.map((ticket) => {
-            const market =
-              supermarkets.find((s) => s.id === ticket.supermarketId)?.name ?? "Supermercado";
-            const count = purchases.filter((p) => p.ticketId === ticket.id).length;
-            return (
-              <article className="ticket-card" key={ticket.id}>
-                <div className="ticket-head">
-                  <div className="store-icon">
-                    <Store size={20} />
+
+        {tickets.length === 0 ? (
+          <div className="panel empty-large">
+            <ReceiptText size={36} />
+            <h3>Aún no has registrado precios</h3>
+            <p>Puedes leer un recibo con OCR local o introducir los productos directamente.</p>
+            <button className="primary" onClick={openNew}>
+              Añadir primeros productos
+            </button>
+          </div>
+        ) : (
+          <div className="ticket-grid">
+            {tickets.map((ticket) => {
+              const market =
+                supermarkets.find((s) => s.id === ticket.supermarketId)?.name ?? "Supermercado";
+              const count = purchases.filter((p) => p.ticketId === ticket.id).length;
+              return (
+                <article className="ticket-card" key={ticket.id}>
+                  <div className="ticket-head">
+                    <div className="store-icon">
+                      <Store size={20} />
+                    </div>
+                    <div>
+                      <strong>{market}</strong>
+                      <span>{new Date(`${ticket.date}T00:00:00`).toLocaleDateString("es-ES")}</span>
+                    </div>
                   </div>
-                  <div>
-                    <strong>{market}</strong>
-                    <span>{new Date(`${ticket.date}T00:00:00`).toLocaleDateString("es-ES")}</span>
+                  <div className="ticket-total">
+                    <span>Total</span>
+                    <strong>{money(ticket.total)}</strong>
                   </div>
-                </div>
-                <div className="ticket-total">
-                  <span>Total</span>
-                  <strong>{money(ticket.total)}</strong>
-                </div>
-                <div className="ticket-meta">
-                  <span>{count} productos</span>
-                  <span>{ticket.filename || "Sin archivo adjunto"}</span>
-                </div>
-                <div className="ticket-actions">
-                  {ticket.fileBlob && (
-                    <button className="ghost" onClick={() => openOriginal(ticket)}>
-                      Ver original
+                  <div className="ticket-meta">
+                    <span>{count} productos</span>
+                    <span>{ticket.filename || "Sin archivo adjunto"}</span>
+                  </div>
+                  <div className="ticket-actions">
+                    {ticket.fileBlob && (
+                      <button className="ghost" onClick={() => openOriginal(ticket)}>
+                        Ver original
+                      </button>
+                    )}
+                    <button className="ghost" onClick={() => openEdit(ticket.id!)}>
+                      Editar
                     </button>
-                  )}
-                  <button className="ghost" onClick={() => openEdit(ticket.id!)}>
-                    Editar
-                  </button>
-                  <button
-                    className="icon-btn danger"
-                    aria-label="Eliminar compra"
-                    onClick={() => removeTicket(ticket)}
-                  >
-                    <Trash2 size={17} />
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-
+                    <button
+                      className="icon-btn danger"
+                      aria-label="Eliminar compra"
+                      onClick={() => removeTicket(ticket)}
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </details>
       {showEditor && (
         <TicketEditor
           ticketId={editingId}
@@ -690,6 +744,7 @@ function TicketEditor({
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrReview, setOcrReview] = useState<OcrResult | null>(null);
   const [ocrError, setOcrError] = useState("");
+  const [showDetails, setShowDetails] = useState(false);
 
   async function runOcr() {
     if (!file) {
@@ -771,6 +826,7 @@ function TicketEditor({
   }
 
   async function save() {
+    if (saving) return;
     setError("");
     const candidates = lines.filter(
       (line) =>
@@ -792,104 +848,130 @@ function TicketEditor({
       return missing.length ? [`Producto ${index + 1}: ${missing.join(", ")}`] : [];
     });
     if (!supermarketId) return setError("Selecciona un supermercado.");
-    if (!candidates.length) return setError("Añade al menos un producto con nombre, formato y precio.");
+    if (!date) return setError("Selecciona la fecha del precio.");
+    if (!candidates.length)
+      return setError("Añade al menos un producto con nombre, formato y precio.");
     if (invalid.length) return setError(`No se ha guardado nada. Revisa ${invalid.join(" · ")}.`);
 
     setSaving(true);
     try {
-      await db.transaction("rw", db.tickets, db.products, db.purchases, db.equivalences, async () => {
-      let currentId = ticketId;
-      if (currentId) {
-        const old = await db.tickets.get(currentId);
-        await db.tickets.update(currentId, {
-          supermarketId,
-          date,
-          total: computedTotal,
-          ...(file
-            ? { filename: file.name, fileType: file.type, fileBlob: file }
-            : old
-              ? { filename: old.filename, fileType: old.fileType, fileBlob: old.fileBlob }
-              : {}),
-        });
-        await db.purchases.where("ticketId").equals(currentId).delete();
-      } else {
-        currentId = await db.tickets.add({
-          supermarketId,
-          date,
-          total: computedTotal,
-          createdAt: new Date().toISOString(),
-          ...(file ? { filename: file.name, fileType: file.type, fileBlob: file } : {}),
-        });
-      }
+      await db.transaction(
+        "rw",
+        db.tickets,
+        db.products,
+        db.purchases,
+        db.equivalences,
+        async () => {
+          let currentId = ticketId;
+          if (currentId) {
+            const old = await db.tickets.get(currentId);
+            await db.tickets.update(currentId, {
+              supermarketId,
+              date,
+              total: computedTotal,
+              ...(file
+                ? { filename: file.name, fileType: file.type, fileBlob: file }
+                : old
+                  ? { filename: old.filename, fileType: old.fileType, fileBlob: old.fileBlob }
+                  : {}),
+            });
+            await db.purchases.where("ticketId").equals(currentId).delete();
+          } else {
+            currentId = await db.tickets.add({
+              supermarketId,
+              date,
+              total: computedTotal,
+              createdAt: new Date().toISOString(),
+              ...(file ? { filename: file.name, fileType: file.type, fileBlob: file } : {}),
+            });
+          }
 
-      for (const line of candidates) {
-        const name = line.productName.trim();
-        const brand = line.brand.trim();
-        const genericName = line.genericName.trim() || name;
-        let product = await db.products
-          .filter(
-            (p) =>
-              p.name.toLowerCase() === name.toLowerCase() &&
-              p.brand.toLowerCase() === brand.toLowerCase(),
-          )
-          .first();
-        if (!product) {
-          const productId = await db.products.add({
-            name,
-            brand,
-            genericName,
-            category: line.category.trim() || "Sin categoría",
-            rating: 0,
-            notes: "",
-            ...(line.photoBlob
-              ? { photoName: line.photoName, photoType: line.photoType, photoBlob: line.photoBlob }
-              : {}),
-          });
-          product = await db.products.get(productId);
-        } else if (
-          product.genericName !== genericName ||
-          product.category !== line.category ||
-          line.photoBlob
-        ) {
-          const updates = {
-            genericName,
-            category: line.category.trim() || "Sin categoría",
-            ...(line.photoBlob
-              ? { photoName: line.photoName, photoType: line.photoType, photoBlob: line.photoBlob }
-              : {}),
-          };
-          await db.products.update(product.id!, updates);
-          product = { ...product, ...updates };
-        }
-        const rawKey = line.productName.trim().toLowerCase();
-        const existingEq = await db.equivalences.where("rawName").equals(rawKey).first();
-        if (existingEq?.id)
-          await db.equivalences.update(existingEq.id, { genericName, brand, productName: name });
-        else await db.equivalences.add({ rawName: rawKey, genericName, brand, productName: name });
+          for (const line of candidates) {
+            const name = line.productName.trim();
+            const brand = line.brand.trim();
+            const rawGenericName = line.genericName.trim() || name;
+            const genericName =
+              products.find((p) => equivalenceKey(p.genericName) === equivalenceKey(rawGenericName))
+                ?.genericName ?? rawGenericName;
+            let product = await db.products
+              .filter(
+                (p) =>
+                  equivalenceKey(p.name) === equivalenceKey(name) &&
+                  equivalenceKey(p.brand) === equivalenceKey(brand),
+              )
+              .first();
+            if (!product) {
+              const productId = await db.products.add({
+                name,
+                brand,
+                genericName,
+                category: productCategory(name, line.category.trim()),
+                rating: 0,
+                notes: "",
+                ...(line.photoBlob
+                  ? {
+                      photoName: line.photoName,
+                      photoType: line.photoType,
+                      photoBlob: line.photoBlob,
+                    }
+                  : {}),
+              });
+              product = await db.products.get(productId);
+            } else if (
+              product.genericName !== genericName ||
+              product.category !== line.category ||
+              line.photoBlob
+            ) {
+              const updates = {
+                genericName,
+                category: productCategory(name, line.category.trim()),
+                ...(line.photoBlob
+                  ? {
+                      photoName: line.photoName,
+                      photoType: line.photoType,
+                      photoBlob: line.photoBlob,
+                    }
+                  : {}),
+              };
+              await db.products.update(product.id!, updates);
+              product = { ...product, ...updates };
+            }
+            const rawKey = line.productName.trim().toLowerCase();
+            const existingEq = await db.equivalences.where("rawName").equals(rawKey).first();
+            if (existingEq?.id)
+              await db.equivalences.update(existingEq.id, {
+                genericName,
+                brand,
+                productName: name,
+              });
+            else
+              await db.equivalences.add({ rawName: rawKey, genericName, brand, productName: name });
 
-        const normalized = normalizeUnitPrice(
-          line.price,
-          line.discount,
-          line.quantityPurchased,
-          line.packageAmount,
-          line.packageUnit,
-        );
-        await db.purchases.add({
-          ticketId: currentId!,
-          productId: product!.id!,
-          supermarketId,
-          date,
-          rawName: name,
-          quantityPurchased: line.quantityPurchased,
-          packageAmount: line.packageAmount,
-          packageUnit: line.packageUnit,
-          price: line.price,
-          discount: line.discount,
-          normalizedUnitPrice: normalized.value,
-          normalizedUnit: normalized.unit,
-        });
-      }
-      });
+            const normalized = normalizeUnitPrice(
+              line.price,
+              line.discount,
+              line.quantityPurchased,
+              line.packageAmount,
+              line.packageUnit,
+            );
+            await db.purchases.add({
+              ticketId: currentId!,
+              productId: product!.id!,
+              supermarketId,
+              date,
+              rawName: name,
+              quantityPurchased: line.quantityPurchased,
+              packageAmount: line.packageAmount,
+              packageUnit: line.packageUnit,
+              price: line.price,
+              discount: line.discount,
+              normalizedUnitPrice: normalized.value,
+              normalizedUnit: normalized.unit,
+            });
+          }
+        },
+      );
+      notifyLocalSave("Productos y precios guardados en este dispositivo.");
       onClose();
     } catch (saveError) {
       setError(
@@ -911,236 +993,284 @@ function TicketEditor({
           aria-modal="true"
           aria-label={ticketId ? "Editar compra" : "Añadir productos y precios"}
         >
-        <div className="modal-head">
-          <div>
-            <span className="eyebrow">{ticketId ? "EDITAR COMPRA" : "NUEVO REGISTRO"}</span>
-            <h2>{ticketId ? "Editar productos y precios" : "Añadir productos y precios"}</h2>
-          </div>
-          <button className="icon-btn" onClick={onClose}>
-            <X size={20} />
-          </button>
-        </div>
-        <div className="form-grid three">
-          <label>
-            Supermercado
-            <select
-              value={supermarketId}
-              onChange={(e) => setSupermarketId(Number(e.target.value))}
-            >
-              {supermarkets.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                  {s.locality ? ` · ${s.locality}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Fecha
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </label>
-          <label>
-            Recibo (imagen/PDF)
-            <input
-              type="file"
-              accept="image/*,.pdf,application/pdf"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
-          </label>
-        </div>
-        <div className="ocr-note">
-          <ScanText size={17} />
-          <div className="ocr-note-body">
+          <div className="modal-head">
             <div>
-              <strong>OCR 100 % local</strong>
-              <span>
-                La imagen o el PDF nunca salen de este dispositivo: el reconocimiento se ejecuta en
-                tu navegador. Revisarás cada línea antes de guardar.
-              </span>
-              {ocrBusy && (
-                <span className="ocr-progress">
-                  {ocrStage} · {Math.round(ocrProgress * 100)} %
+              <span className="eyebrow">{ticketId ? "EDITAR COMPRA" : "NUEVO REGISTRO"}</span>
+              <h2>{ticketId ? "Editar productos y precios" : "Añadir productos y precios"}</h2>
+            </div>
+            <button
+              className="icon-btn"
+              onClick={onClose}
+              aria-label="Cerrar editor"
+              disabled={saving}
+            >
+              <X size={20} />
+            </button>
+          </div>
+          <div className="form-grid three">
+            <label>
+              Supermercado
+              <select
+                value={supermarketId}
+                onChange={(e) => setSupermarketId(Number(e.target.value))}
+              >
+                {supermarkets.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                    {s.locality ? ` · ${s.locality}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Fecha
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            </label>
+            <label>
+              Recibo (imagen/PDF)
+              <input
+                type="file"
+                accept="image/*,.pdf,application/pdf"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
+            </label>
+          </div>
+          <div className="ocr-note">
+            <ScanText size={17} />
+            <div className="ocr-note-body">
+              <div>
+                <strong>OCR 100 % local</strong>
+                <span>
+                  La imagen o el PDF nunca salen de este dispositivo: el reconocimiento se ejecuta
+                  en tu navegador. Revisarás cada línea antes de guardar.
+                </span>
+                {ocrBusy && (
+                  <span className="ocr-progress">
+                    {ocrStage} · {Math.round(ocrProgress * 100)} %
+                  </span>
+                )}
+                {ocrError && <span className="error">{ocrError}</span>}
+              </div>
+              <button className="primary" type="button" onClick={runOcr} disabled={ocrBusy}>
+                <Wand2 size={17} /> {ocrBusy ? "Leyendo…" : "Leer recibo con OCR"}
+              </button>
+            </div>
+          </div>
+          {ocrReview && (
+            <OcrReview
+              result={ocrReview}
+              onCancel={() => setOcrReview(null)}
+              onApply={applyOcrLines}
+            />
+          )}
+          <button
+            className="ghost editor-details-toggle"
+            type="button"
+            aria-expanded={showDetails}
+            onClick={() => setShowDetails((value) => !value)}
+          >
+            {showDetails
+              ? "Ocultar opciones adicionales"
+              : "Más opciones: foto, marca, categoría y descuento"}
+          </button>
+          <div className={`line-table-wrap ${showDetails ? "details-visible" : "details-hidden"}`}>
+            <table className="line-table">
+              <thead>
+                <tr>
+                  <th className="advanced-field">Foto</th>
+                  <th>Producto</th>
+                  <th className="advanced-field">Equivalente a</th>
+                  <th className="advanced-field">Marca</th>
+                  <th className="advanced-field">Categoría</th>
+                  <th>Formato</th>
+                  <th>Uds.</th>
+                  <th>Precio total (€)</th>
+                  <th className="advanced-field">Descuento (€)</th>
+                  <th>Precio comparable</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line) => (
+                  <tr key={line.id}>
+                    <td className="advanced-field" data-label="Foto">
+                      <label className="product-photo-picker" title="Subir foto del producto">
+                        {line.photoBlob ? (
+                          <ProductPhoto
+                            blob={line.photoBlob}
+                            alt={line.productName || "Producto"}
+                          />
+                        ) : (
+                          <ImagePlus size={18} />
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          aria-label={`${line.photoBlob ? "Cambiar" : "Añadir"} imagen de ${line.productName || "producto"}`}
+                          onChange={async (e) => {
+                            const photo = e.target.files?.[0];
+                            if (!photo) return;
+                            if (photo.size > 8 * 1024 * 1024) {
+                              setError("La foto del producto no puede superar 8 MB.");
+                              e.target.value = "";
+                              return;
+                            }
+                            try {
+                              const optimized = await optimizeProductPhoto(photo);
+                              setError("");
+                              updateLine(line.id, optimized);
+                            } catch {
+                              setError(
+                                "No se pudo preparar la imagen. Prueba con una foto JPG, PNG o WebP.",
+                              );
+                            } finally {
+                              e.target.value = "";
+                            }
+                          }}
+                        />
+                      </label>
+                    </td>
+                    <td className="line-product-name" data-label="Producto">
+                      <input
+                        aria-label="Nombre del producto"
+                        value={line.productName}
+                        onChange={(e) => updateLine(line.id, { productName: e.target.value })}
+                        placeholder="Atún Hacendado"
+                      />
+                    </td>
+                    <td className="advanced-field" data-label="Equivalente a">
+                      <input
+                        aria-label="Producto equivalente"
+                        value={line.genericName}
+                        onChange={(e) => updateLine(line.id, { genericName: e.target.value })}
+                        placeholder="Atún en aceite de oliva"
+                      />
+                    </td>
+                    <td className="advanced-field" data-label="Marca">
+                      <input
+                        aria-label="Marca"
+                        value={line.brand}
+                        onChange={(e) => updateLine(line.id, { brand: e.target.value })}
+                        placeholder="Hacendado"
+                      />
+                    </td>
+                    <td className="advanced-field" data-label="Categoría">
+                      <select
+                        aria-label="Categoría"
+                        value={line.category}
+                        onChange={(e) => updateLine(line.id, { category: e.target.value })}
+                      >
+                        {!PRODUCT_CATEGORIES.includes(
+                          line.category as (typeof PRODUCT_CATEGORIES)[number],
+                        ) && <option>{line.category}</option>}
+                        {PRODUCT_CATEGORIES.map((category) => (
+                          <option key={category}>{category}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td data-label="Formato del envase">
+                      <div className="format-input">
+                        <input
+                          aria-label="Cantidad del envase"
+                          type="number"
+                          min="0.001"
+                          step="0.001"
+                          value={line.packageAmount}
+                          onChange={(e) =>
+                            updateLine(line.id, { packageAmount: parseNumber(e.target.value) })
+                          }
+                        />
+                        <select
+                          aria-label="Unidad del formato"
+                          value={line.packageUnit}
+                          onChange={(e) =>
+                            updateLine(line.id, { packageUnit: e.target.value as PackageUnit })
+                          }
+                        >
+                          <option value="g">g</option>
+                          <option value="kg">kg</option>
+                          <option value="ml">ml</option>
+                          <option value="l">L</option>
+                          <option value="ud">ud</option>
+                        </select>
+                      </div>
+                    </td>
+                    <td data-label="Unidades compradas">
+                      <input
+                        aria-label="Unidades compradas"
+                        type="number"
+                        min="0.01"
+                        step="1"
+                        value={line.quantityPurchased}
+                        onChange={(e) =>
+                          updateLine(line.id, { quantityPurchased: parseNumber(e.target.value) })
+                        }
+                      />
+                    </td>
+                    <td data-label="Precio total (€)">
+                      <input
+                        aria-label="Precio total"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={line.price}
+                        onChange={(e) =>
+                          updateLine(line.id, { price: parseNumber(e.target.value) })
+                        }
+                      />
+                    </td>
+                    <td className="advanced-field" data-label="Descuento (€)">
+                      <input
+                        aria-label="Descuento"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={line.discount}
+                        onChange={(e) =>
+                          updateLine(line.id, { discount: parseNumber(e.target.value) })
+                        }
+                      />
+                    </td>
+                    <td data-label="Precio comparable">
+                      <span className="calculated-unit-price">{formatDraftUnitPrice(line)}</span>
+                    </td>
+                    <td>
+                      <button
+                        className="icon-btn danger"
+                        aria-label={`Quitar ${line.productName || "producto"} del registro`}
+                        onClick={() => setLines((p) => p.filter((x) => x.id !== line.id))}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button className="ghost add-line" onClick={() => setLines((p) => [...p, emptyLine()])}>
+            <Plus size={17} /> Añadir producto
+          </button>
+          <div className="modal-footer">
+            <div>
+              <span>Total calculado</span>
+              <strong>{money(computedTotal)}</strong>
+            </div>
+            <div>
+              {error && (
+                <span className="error" role="alert">
+                  {error}
                 </span>
               )}
-              {ocrError && <span className="error">{ocrError}</span>}
+              <button className="ghost" onClick={onClose} disabled={saving}>
+                Cancelar
+              </button>
+              <button className="primary" onClick={save} disabled={saving}>
+                <Save size={17} /> {saving ? "Guardando…" : "Guardar productos y precios"}
+              </button>
             </div>
-            <button className="primary" type="button" onClick={runOcr} disabled={ocrBusy}>
-              <Wand2 size={17} /> {ocrBusy ? "Leyendo…" : "Leer recibo con OCR"}
-            </button>
           </div>
-        </div>
-        {ocrReview && (
-          <OcrReview
-            result={ocrReview}
-            onCancel={() => setOcrReview(null)}
-            onApply={applyOcrLines}
-          />
-        )}
-        <div className="line-table-wrap">
-          <table className="line-table">
-            <thead>
-              <tr>
-                <th>Foto</th>
-                <th>Producto</th>
-                <th>Producto genérico</th>
-                <th>Marca</th>
-                <th>Formato</th>
-                <th>Uds.</th>
-                <th>Precio</th>
-                <th>Dto.</th>
-                <th>Precio comparable</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((line) => (
-                <tr key={line.id}>
-                  <td>
-                    <label className="product-photo-picker" title="Subir foto del producto">
-                      {line.photoBlob ? (
-                        <ProductPhoto blob={line.photoBlob} alt={line.productName || "Producto"} />
-                      ) : (
-                        <ImagePlus size={18} />
-                      )}
-                      <input
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        aria-label={`${line.photoBlob ? "Cambiar" : "Añadir"} imagen de ${line.productName || "producto"}`}
-                        onChange={async (e) => {
-                          const photo = e.target.files?.[0];
-                          if (!photo) return;
-                          if (photo.size > 8 * 1024 * 1024) {
-                            setError("La foto del producto no puede superar 8 MB.");
-                            e.target.value = "";
-                            return;
-                          }
-                          try {
-                            const optimized = await optimizeProductPhoto(photo);
-                            setError("");
-                            updateLine(line.id, optimized);
-                          } catch {
-                            setError(
-                              "No se pudo preparar la imagen. Prueba con una foto JPG, PNG o WebP.",
-                            );
-                          } finally {
-                            e.target.value = "";
-                          }
-                        }}
-                      />
-                    </label>
-                  </td>
-                  <td>
-                    <input
-                      value={line.productName}
-                      onChange={(e) => updateLine(line.id, { productName: e.target.value })}
-                      placeholder="Atún Hacendado"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      value={line.genericName}
-                      onChange={(e) => updateLine(line.id, { genericName: e.target.value })}
-                      placeholder="Atún en aceite de oliva"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      value={line.brand}
-                      onChange={(e) => updateLine(line.id, { brand: e.target.value })}
-                      placeholder="Hacendado"
-                    />
-                  </td>
-                  <td>
-                    <div className="format-input">
-                      <input
-                        type="number"
-                        min="0.001"
-                        step="0.001"
-                        value={line.packageAmount}
-                        onChange={(e) =>
-                          updateLine(line.id, { packageAmount: parseNumber(e.target.value) })
-                        }
-                      />
-                      <select
-                        value={line.packageUnit}
-                        onChange={(e) =>
-                          updateLine(line.id, { packageUnit: e.target.value as PackageUnit })
-                        }
-                      >
-                        <option value="g">g</option>
-                        <option value="kg">kg</option>
-                        <option value="ml">ml</option>
-                        <option value="l">L</option>
-                        <option value="ud">ud</option>
-                      </select>
-                    </div>
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="1"
-                      value={line.quantityPurchased}
-                      onChange={(e) =>
-                        updateLine(line.id, { quantityPurchased: parseNumber(e.target.value) })
-                      }
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={line.price}
-                      onChange={(e) => updateLine(line.id, { price: parseNumber(e.target.value) })}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={line.discount}
-                      onChange={(e) =>
-                        updateLine(line.id, { discount: parseNumber(e.target.value) })
-                      }
-                    />
-                  </td>
-                  <td>
-                    <span className="calculated-unit-price">{formatDraftUnitPrice(line)}</span>
-                  </td>
-                  <td>
-                    <button
-                      className="icon-btn danger"
-                      onClick={() => setLines((p) => p.filter((x) => x.id !== line.id))}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <button className="ghost add-line" onClick={() => setLines((p) => [...p, emptyLine()])}>
-          <Plus size={17} /> Añadir producto
-        </button>
-        <div className="modal-footer">
-          <div>
-            <span>Total calculado</span>
-            <strong>{money(computedTotal)}</strong>
-          </div>
-          <div>
-            {error && <span className="error">{error}</span>}
-            <button className="ghost" onClick={onClose}>
-              Cancelar
-            </button>
-            <button className="primary" onClick={save} disabled={saving}>
-              <Save size={17} /> {saving ? "Guardando…" : "Guardar productos y precios"}
-            </button>
-          </div>
-        </div>
         </div>
       </div>
     </ModalPortal>
@@ -1338,32 +1468,13 @@ function ProductsView() {
   const [newBrand, setNewBrand] = useState("");
   const [newGenericName, setNewGenericName] = useState("");
   const [newBarcode, setNewBarcode] = useState("");
-  const [newCategory, setNewCategory] = useState<string>(PRODUCT_CATEGORIES[5]);
+  const [newCategory, setNewCategory] = useState<string>("Otros");
   const [newPurchaseUrl, setNewPurchaseUrl] = useState("");
   const [productError, setProductError] = useState("");
+  const [creatingProduct, setCreatingProduct] = useState(false);
   const [editingOffersProduct, setEditingOffersProduct] = useState<Product | null>(null);
-  const [catalogSyncStatus, setCatalogSyncStatus] = useState("");
-  const lastCatalogSyncSignature = useRef("");
   const isCatalogAdmin =
     catalogUser?.email?.toLocaleLowerCase("es-ES") === PUBLIC_CATALOG_ADMIN_EMAIL;
-  const catalogSignature = useMemo(
-    () =>
-      JSON.stringify(
-        products.map((product) => ({
-          id: product.id,
-          name: product.name,
-          brand: product.brand,
-          genericName: product.genericName,
-          category: product.category,
-          purchaseUrl: product.purchaseUrl,
-          rating: product.rating,
-          notes: product.notes,
-          photoSize: product.photoBlob?.size ?? 0,
-          photoType: product.photoBlob?.type ?? "",
-        })),
-      ),
-    [products],
-  );
   const filtered = products.filter((p) =>
     `${p.name} ${p.brand} ${p.genericName}`.toLowerCase().includes(query.toLowerCase()),
   );
@@ -1376,47 +1487,26 @@ function ProductsView() {
     return () => data.subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if (!isCatalogAdmin || !catalogUser?.id || !products.some((product) => product.id)) return;
-    if (catalogSignature === lastCatalogSyncSignature.current) return;
-    let active = true;
-    const timer = window.setTimeout(() => {
-      if (active) setCatalogSyncStatus("Sincronizando productos con el catálogo público…");
-      void publishProductsToPublicCatalog(products, catalogUser.id).then((result) => {
-        if (result.error) {
-          if (active) setCatalogSyncStatus(result.error);
-          return;
-        }
-        lastCatalogSyncSignature.current = catalogSignature;
-        if (active)
-          setCatalogSyncStatus(
-            `Catálogo público actualizado automáticamente · ${result.count} productos.`,
-          );
-      });
-    }, 500);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-  }, [catalogSignature, catalogUser?.id, isCatalogAdmin, products]);
-
   async function setRating(product: Product, rating: number) {
     if (product.id) await db.products.update(product.id, { rating });
   }
   async function updateGenericName(product: Product, value: string) {
-    if (product.id) await db.products.update(product.id, { genericName: value });
+    const clean = value.trim().replace(/\s+/g, " ") || product.name;
+    const genericName =
+      products.find(
+        (p) => p.id !== product.id && equivalenceKey(p.genericName) === equivalenceKey(clean),
+      )?.genericName ?? clean;
+    if (product.id) await db.products.update(product.id, { genericName });
   }
-  async function updateProductIdentity(
-    product: Product,
-    field: "name" | "brand",
-    value: string,
-  ) {
+  async function updateProductIdentity(product: Product, field: "name" | "brand", value: string) {
     if (!product.id) return;
     const clean = value.trim();
     if (field === "name" && !clean) {
       alert("El nombre del producto no puede quedar vacío.");
       return;
     }
+    if (field === "name" && clean.length > 180)
+      return alert("El nombre no puede superar 180 caracteres.");
     await db.products.update(product.id, { [field]: clean });
   }
   async function updateCategory(product: Product, category: string) {
@@ -1425,7 +1515,10 @@ function ProductsView() {
   async function updateBarcode(product: Product, value: string) {
     if (!product.id) return;
     const barcode = value.replace(/\D/g, "");
-    if (barcode && products.some((candidate) => candidate.id !== product.id && candidate.barcode === barcode))
+    if (
+      barcode &&
+      products.some((candidate) => candidate.id !== product.id && candidate.barcode === barcode)
+    )
       return alert("Ese código de barras ya pertenece a otro producto.");
     await db.products.update(product.id, { barcode });
   }
@@ -1438,13 +1531,20 @@ function ProductsView() {
       if (!response.ok) throw new Error("Consulta no disponible");
       const payload = (await response.json()) as {
         status?: number;
-        product?: { product_name_es?: string; product_name?: string; brands?: string; categories_tags?: string[] };
+        product?: {
+          product_name_es?: string;
+          product_name?: string;
+          brands?: string;
+          categories_tags?: string[];
+        };
       };
       if (payload.status !== 1 || !payload.product) return alert("No se encontró ese producto.");
       const name = payload.product.product_name_es || payload.product.product_name;
       await db.products.update(product.id, {
         ...(name ? { name } : {}),
-        ...(payload.product.brands ? { brand: payload.product.brands.split(",")[0]?.trim() ?? "" } : {}),
+        ...(payload.product.brands
+          ? { brand: payload.product.brands.split(",")[0]?.trim() ?? "" }
+          : {}),
         ...(name && !product.genericName ? { genericName: name } : {}),
       });
     } catch {
@@ -1476,6 +1576,7 @@ function ProductsView() {
     await db.products.update(product.id, { purchaseUrl });
   }
   async function createProduct() {
+    if (creatingProduct) return;
     setProductError("");
     if (!isCatalogAdmin)
       return setProductError("Solo el administrador puede crear productos manuales.");
@@ -1485,6 +1586,7 @@ function ProductsView() {
     const barcode = newBarcode.replace(/\D/g, "");
     const purchaseUrl = cleanPurchaseUrl(newPurchaseUrl);
     if (!name) return setProductError("Escribe el nombre del producto.");
+    if (name.length > 180) return setProductError("El nombre no puede superar 180 caracteres.");
     if (!isValidPurchaseUrl(purchaseUrl))
       return setProductError("El enlace no es válido. Usa una dirección que empiece por https://");
     const duplicate = products.some(
@@ -1495,12 +1597,13 @@ function ProductsView() {
     if (duplicate) return setProductError("Ese producto y marca ya están guardados.");
     if (barcode && products.some((product) => product.barcode === barcode))
       return setProductError("Ese código de barras ya está guardado.");
+    setCreatingProduct(true);
     try {
       await db.products.add({
         name,
         brand,
         genericName,
-        category: newCategory,
+        category: productCategory(name, newCategory),
         rating: 0,
         notes: "",
         ...(barcode ? { barcode } : {}),
@@ -1510,15 +1613,18 @@ function ProductsView() {
       setNewBrand("");
       setNewGenericName("");
       setNewBarcode("");
-      setNewCategory(PRODUCT_CATEGORIES[5]);
+      setNewCategory("Otros");
       setNewPurchaseUrl("");
       setShowNewProduct(false);
+      notifyLocalSave("Producto guardado. Se publicará automáticamente en el catálogo.");
     } catch (createError) {
       setProductError(
         createError instanceof Error
           ? `No se pudo guardar el producto: ${createError.message}`
           : "No se pudo guardar el producto.",
       );
+    } finally {
+      setCreatingProduct(false);
     }
   }
   async function updatePhoto(product: Product, photo?: File) {
@@ -1544,12 +1650,17 @@ function ProductsView() {
         "Este producto tiene precios asociados. Edita o elimina primero sus compras registradas.",
       );
     if (isCatalogAdmin && catalogUser?.id) {
-      const { error } = await supabase
-        .from("public_products")
-        .delete()
-        .eq("owner_id", catalogUser.id)
-        .eq("source_product_id", product.id);
-      if (error) return alert(`No se pudo retirar del catálogo público: ${error.message}`);
+      const key = catalogDeletionsKey(catalogUser.id);
+      await db.transaction("rw", db.products, db.appSettings, async () => {
+        const pending = (await db.appSettings.get(key))?.value as number[] | undefined;
+        await db.appSettings.put({
+          key,
+          value: [...new Set([...(pending ?? []), product.id!])],
+          updatedAt: new Date().toISOString(),
+        });
+        await db.products.delete(product.id!);
+      });
+      return;
     }
     await db.products.delete(product.id);
   }
@@ -1583,9 +1694,6 @@ function ProductsView() {
           )}
         </div>
       </div>
-      {isCatalogAdmin && catalogSyncStatus && (
-        <div className="catalog-status auto-catalog-status">{catalogSyncStatus}</div>
-      )}
       <ProductPriceWorkspace />
       {isCatalogAdmin && showNewProduct && (
         <div className="panel new-product-panel">
@@ -1593,31 +1701,50 @@ function ProductsView() {
             <span className="eyebrow">ALTA MANUAL</span>
             <h3>Añadir producto recomendado</h3>
             <p>
-              Pega el enlace de afiliado al crear el producto. Podrás cambiar todos estos datos
-              más adelante.
+              Pega el enlace de afiliado al crear el producto. Podrás cambiar todos estos datos más
+              adelante.
             </p>
           </div>
           <div className="form-grid product-create-grid">
             <label>
               Nombre *
-              <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Cápsulas de café avellana" />
+              <input
+                value={newName}
+                onChange={(event) => setNewName(event.target.value)}
+                placeholder="Cápsulas de café avellana"
+              />
             </label>
             <label>
               Marca
-              <input value={newBrand} onChange={(event) => setNewBrand(event.target.value)} placeholder="by Amazon" />
+              <input
+                value={newBrand}
+                onChange={(event) => setNewBrand(event.target.value)}
+                placeholder="by Amazon"
+              />
             </label>
             <label>
               Producto genérico
-              <input value={newGenericName} onChange={(event) => setNewGenericName(event.target.value)} placeholder="Cápsulas de café" />
+              <input
+                value={newGenericName}
+                onChange={(event) => setNewGenericName(event.target.value)}
+                placeholder="Cápsulas de café"
+              />
             </label>
             <label>
               Código de barras
-              <input inputMode="numeric" value={newBarcode} onChange={(event) => setNewBarcode(event.target.value.replace(/\D/g, ""))} placeholder="8412345678901" />
+              <input
+                inputMode="numeric"
+                value={newBarcode}
+                onChange={(event) => setNewBarcode(event.target.value.replace(/\D/g, ""))}
+                placeholder="8412345678901"
+              />
             </label>
             <label>
               Categoría
               <select value={newCategory} onChange={(event) => setNewCategory(event.target.value)}>
-                {PRODUCT_CATEGORIES.map((category) => <option key={category}>{category}</option>)}
+                {PRODUCT_CATEGORIES.map((category) => (
+                  <option key={category}>{category}</option>
+                ))}
               </select>
             </label>
             <label className="product-url-field">
@@ -1633,8 +1760,13 @@ function ProductsView() {
           </div>
           <div className="new-product-footer">
             <span className="error">{productError}</span>
-            <button className="primary" type="button" onClick={() => void createProduct()}>
-              <Save size={17} /> Guardar producto
+            <button
+              className="primary"
+              type="button"
+              disabled={creatingProduct}
+              onClick={() => void createProduct()}
+            >
+              <Save size={17} /> {creatingProduct ? "Guardando…" : "Guardar producto"}
             </button>
           </div>
         </div>
@@ -1652,12 +1784,11 @@ function ProductsView() {
       ) : (
         <div className="product-list">
           {filtered.map((product) => {
-            const pp = purchases
-              .filter((p) => p.productId === product.id)
-              .sort((a, b) => b.date.localeCompare(a.date));
+            const pp = purchases.filter((p) => p.productId === product.id).sort(newestFirst);
             const latestByMarket = Array.from(
               pp.reduce((offers, purchase) => {
-                if (!offers.has(purchase.supermarketId)) offers.set(purchase.supermarketId, purchase);
+                if (!offers.has(purchase.supermarketId))
+                  offers.set(purchase.supermarketId, purchase);
                 return offers;
               }, new Map<number, Purchase>()),
             );
@@ -1734,7 +1865,12 @@ function ProductsView() {
                           placeholder="Escanear o escribir"
                           onBlur={(event) => void updateBarcode(product, event.target.value)}
                         />
-                        <button className="ghost" type="button" title="Completar desde Open Food Facts" onClick={() => void completeFromBarcode(product)}>
+                        <button
+                          className="ghost"
+                          type="button"
+                          title="Completar desde Open Food Facts"
+                          onClick={() => void completeFromBarcode(product)}
+                        >
                           <ScanText size={14} /> Buscar
                         </button>
                       </span>
@@ -1749,8 +1885,9 @@ function ProductsView() {
                 <label className="inline-field">
                   Equivalente a
                   <input
-                    value={product.genericName}
-                    onChange={(e) => updateGenericName(product, e.target.value)}
+                    key={`${product.id}-generic-${product.genericName}`}
+                    defaultValue={product.genericName}
+                    onBlur={(e) => void updateGenericName(product, e.target.value)}
                   />
                 </label>
                 <label className="inline-field">
@@ -1782,15 +1919,30 @@ function ProductsView() {
                   ))}
                 </div>
                 <div className="latest-price product-offer-summary">
-                  <span>{latestByMarket.length ? `${latestByMarket.length} supermercados` : "Sin precios"}</span>
+                  <span>
+                    {latestByMarket.length
+                      ? `${latestByMarket.length} supermercados`
+                      : "Sin precios"}
+                  </span>
                   {latestByMarket.slice(0, 3).map(([supermarketId, offer]) => (
                     <small key={supermarketId}>
-                      <b>{supermarkets.find((store) => store.id === supermarketId)?.name ?? "Supermercado"}</b>{" "}
-                      {money(Math.max(0, offer.price - offer.discount))} · {offer.packageAmount} {offer.packageUnit}
+                      <b>
+                        {supermarkets.find((store) => store.id === supermarketId)?.name ??
+                          "Supermercado"}
+                      </b>{" "}
+                      {money(packagePrice(offer))} / envase · {offer.packageAmount}{" "}
+                      {offer.packageUnit}
+                      <time dateTime={offer.date}>
+                        {new Date(`${offer.date}T00:00:00`).toLocaleDateString("es-ES")}
+                      </time>
                     </small>
                   ))}
                   {latestByMarket.length > 3 && <small>+ {latestByMarket.length - 3} más</small>}
-                  <button className="ghost compact" type="button" onClick={() => setEditingOffersProduct(product)}>
+                  <button
+                    className="ghost compact"
+                    type="button"
+                    onClick={() => setEditingOffersProduct(product)}
+                  >
                     <Pencil size={14} /> Editar precios y formatos
                   </button>
                 </div>
@@ -1820,7 +1972,11 @@ function ProductsView() {
                     </a>
                   )}
                 </div>
-                <button className="icon-btn danger" onClick={() => deleteProduct(product)}>
+                <button
+                  className="icon-btn danger"
+                  aria-label={`Eliminar ${product.name}`}
+                  onClick={() => deleteProduct(product)}
+                >
                   <Trash2 size={16} />
                 </button>
               </article>
@@ -1888,7 +2044,7 @@ function ProductOffersEditor({
   const latestOffers = Array.from(
     purchases
       .filter((purchase) => purchase.productId === product.id)
-      .sort((a, b) => b.date.localeCompare(a.date))
+      .sort(newestFirst)
       .reduce((offers, purchase) => {
         if (!offers.has(purchase.supermarketId)) offers.set(purchase.supermarketId, purchase);
         return offers;
@@ -1901,7 +2057,7 @@ function ProductOffersEditor({
         key: uid(),
         ...(offer.id ? { purchaseId: offer.id } : {}),
         supermarketId: offer.supermarketId,
-        price: offer.price,
+        price: Math.max(0, offer.price - offer.discount),
         packageAmount: offer.packageAmount,
         packageUnit: offer.packageUnit,
         quantityPurchased: offer.quantityPurchased,
@@ -1911,6 +2067,7 @@ function ProductOffersEditor({
     }),
   );
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   function addStore() {
     const used = new Set(rows.filter((row) => !row.removed).map((row) => row.supermarketId));
@@ -1931,119 +2088,253 @@ function ProductOffersEditor({
   }
 
   function updateRow(key: string, patch: Partial<ProductOfferDraft>) {
-    setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+    setRows((current) =>
+      current.map((row) => {
+        if (row.key !== key) return row;
+        const originalDate = latestOffers.find((offer) => offer.id === row.purchaseId)?.date;
+        const updatingPrice =
+          "price" in patch ||
+          "packageAmount" in patch ||
+          "packageUnit" in patch ||
+          "quantityPurchased" in patch;
+        return {
+          ...row,
+          ...(updatingPrice && row.date === originalDate ? { date: todayISO() } : {}),
+          ...patch,
+        };
+      }),
+    );
   }
 
   async function saveOffers() {
-    if (!product.id) return;
+    if (!product.id || saving) return;
     setError("");
     const active = rows.filter((row) => !row.removed);
-    if (active.some((row) => !row.supermarketId || row.price < 0 || row.packageAmount <= 0 || row.quantityPurchased <= 0))
-      return setError("Revisa el supermercado, el precio y el formato de cada fila.");
+    if (
+      active.some(
+        (row) =>
+          !row.supermarketId ||
+          !row.date ||
+          !Number.isFinite(row.price) ||
+          row.price < 0 ||
+          row.packageAmount <= 0 ||
+          row.quantityPurchased <= 0,
+      )
+    )
+      return setError("Revisa supermercado, fecha, precio, formato y unidades de cada fila.");
     if (new Set(active.map((row) => row.supermarketId)).size !== active.length)
       return setError("Cada supermercado solo puede aparecer una vez por producto.");
 
-    await db.transaction("rw", db.tickets, db.purchases, async () => {
-      const affectedTickets = new Set<number>();
-      for (const row of rows) {
-        if (row.removed) {
-          if (row.purchaseId) {
-            const stored = await db.purchases.get(row.purchaseId);
-            if (stored) affectedTickets.add(stored.ticketId);
-            await db.purchases.delete(row.purchaseId);
+    setSaving(true);
+    try {
+      await db.transaction("rw", db.tickets, db.purchases, async () => {
+        const affectedTickets = new Set<number>();
+        for (const row of rows) {
+          if (row.removed) {
+            if (row.purchaseId) {
+              const stored = await db.purchases.get(row.purchaseId);
+              if (stored) affectedTickets.add(stored.ticketId);
+              await db.purchases.delete(row.purchaseId);
+            }
+            continue;
           }
-          continue;
+          const normalized = normalizeUnitPrice(
+            row.price,
+            0,
+            row.quantityPurchased,
+            row.packageAmount,
+            row.packageUnit,
+          );
+          const changed = !row.purchaseId || row.originalSignature !== productOfferSignature(row);
+          if (changed) {
+            const ticketId = await db.tickets.add({
+              supermarketId: row.supermarketId,
+              date: row.date,
+              total: row.price,
+              createdAt: new Date().toISOString(),
+            });
+            affectedTickets.add(ticketId);
+            await db.purchases.add({
+              ticketId,
+              productId: product.id!,
+              supermarketId: row.supermarketId,
+              date: row.date,
+              rawName: product.name,
+              quantityPurchased: row.quantityPurchased,
+              packageAmount: row.packageAmount,
+              packageUnit: row.packageUnit,
+              price: row.price,
+              discount: 0,
+              normalizedUnitPrice: normalized.value,
+              normalizedUnit: normalized.unit,
+            });
+          }
         }
-        const normalized = normalizeUnitPrice(
-          row.price,
-          0,
-          row.quantityPurchased,
-          row.packageAmount,
-          row.packageUnit,
-        );
-        const changed = !row.purchaseId || row.originalSignature !== productOfferSignature(row);
-        if (changed) {
-          const ticketId = await db.tickets.add({
-            supermarketId: row.supermarketId,
-            date: row.date,
-            total: row.price,
-            createdAt: new Date().toISOString(),
-          });
-          affectedTickets.add(ticketId);
-          await db.purchases.add({
-            ticketId,
-            productId: product.id!,
-            supermarketId: row.supermarketId,
-            date: row.date,
-            rawName: product.name,
-            quantityPurchased: row.quantityPurchased,
-            packageAmount: row.packageAmount,
-            packageUnit: row.packageUnit,
-            price: row.price,
-            discount: 0,
-            normalizedUnitPrice: normalized.value,
-            normalizedUnit: normalized.unit,
-          });
+        for (const ticketId of affectedTickets) {
+          const remaining = await db.purchases.where("ticketId").equals(ticketId).toArray();
+          if (!remaining.length) await db.tickets.delete(ticketId);
+          else
+            await db.tickets.update(ticketId, {
+              total: remaining.reduce(
+                (sum, purchase) => sum + Math.max(0, purchase.price - purchase.discount),
+                0,
+              ),
+            });
         }
-      }
-      for (const ticketId of affectedTickets) {
-        const remaining = await db.purchases.where("ticketId").equals(ticketId).toArray();
-        if (!remaining.length) await db.tickets.delete(ticketId);
-        else
-          await db.tickets.update(ticketId, {
-            total: remaining.reduce((sum, purchase) => sum + Math.max(0, purchase.price - purchase.discount), 0),
-          });
-      }
-    });
-    onClose();
+      });
+      notifyLocalSave("Precios guardados; las observaciones anteriores se conservan.");
+      onClose();
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? `No se guardaron los cambios: ${saveError.message}`
+          : "No se guardaron los cambios. Inténtalo de nuevo.",
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <ModalPortal>
       <div className="modal-backdrop" role="presentation">
-        <div className="modal product-offers-modal" role="dialog" aria-modal="true" aria-label={`Editar precios de ${product.name}`}>
+        <div
+          className="modal product-offers-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Editar precios de ${product.name}`}
+        >
           <div className="modal-head">
             <div>
               <span className="eyebrow">UN PRODUCTO, VARIOS SUPERMERCADOS</span>
               <h2>{product.name}</h2>
               <p>Cada cambio crea una nueva observación y conserva el histórico anterior.</p>
             </div>
-            <button className="icon-btn" type="button" onClick={onClose}><X size={20} /></button>
+            <button
+              className="icon-btn"
+              type="button"
+              aria-label="Cerrar editor de precios"
+              disabled={saving}
+              onClick={onClose}
+            >
+              <X size={20} />
+            </button>
           </div>
           <div className="offer-editor-list">
-            {rows.filter((row) => !row.removed).map((row) => (
-              <div className="offer-editor-row" key={row.key}>
-                <label>Supermercado
-                  <select value={row.supermarketId} onChange={(event) => updateRow(row.key, { supermarketId: Number(event.target.value) })}>
-                    {supermarkets.map((store) => <option key={store.id} value={store.id}>{store.name}{store.locality ? ` · ${store.locality}` : ""}</option>)}
-                  </select>
-                </label>
-                <label>Precio total
-                  <input type="number" min="0" step="0.01" value={row.price} onChange={(event) => updateRow(row.key, { price: parseNumber(event.target.value) })} />
-                </label>
-                <label>Cantidad
-                  <input type="number" min="0.01" step="0.01" value={row.packageAmount} onChange={(event) => updateRow(row.key, { packageAmount: parseNumber(event.target.value) })} />
-                </label>
-                <label>Formato
-                  <select value={row.packageUnit} onChange={(event) => updateRow(row.key, { packageUnit: event.target.value as PackageUnit })}>
-                    <option value="g">g</option><option value="kg">kg</option><option value="ml">ml</option><option value="l">l</option><option value="ud">ud</option>
-                  </select>
-                </label>
-                <label>Unidades
-                  <input type="number" min="1" step="1" value={row.quantityPurchased} onChange={(event) => updateRow(row.key, { quantityPurchased: parseNumber(event.target.value) })} />
-                </label>
-                <label>Fecha
-                  <input type="date" value={row.date} onChange={(event) => updateRow(row.key, { date: event.target.value })} />
-                </label>
-                <button className="icon-btn danger" type="button" title="Eliminar precio de este supermercado" onClick={() => updateRow(row.key, { removed: true })}><Trash2 size={16} /></button>
-              </div>
-            ))}
-            {!rows.some((row) => !row.removed) && <Empty text="Añade un supermercado para registrar su precio." />}
+            {rows
+              .filter((row) => !row.removed)
+              .map((row) => (
+                <div className="offer-editor-row" key={row.key}>
+                  <label>
+                    Supermercado
+                    <select
+                      value={row.supermarketId}
+                      onChange={(event) =>
+                        updateRow(row.key, { supermarketId: Number(event.target.value) })
+                      }
+                    >
+                      {supermarkets.map((store) => (
+                        <option key={store.id} value={store.id}>
+                          {store.name}
+                          {store.locality ? ` · ${store.locality}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Precio total
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row.price}
+                      onChange={(event) =>
+                        updateRow(row.key, { price: parseNumber(event.target.value) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Cantidad
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={row.packageAmount}
+                      onChange={(event) =>
+                        updateRow(row.key, { packageAmount: parseNumber(event.target.value) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Formato
+                    <select
+                      value={row.packageUnit}
+                      onChange={(event) =>
+                        updateRow(row.key, { packageUnit: event.target.value as PackageUnit })
+                      }
+                    >
+                      <option value="g">g</option>
+                      <option value="kg">kg</option>
+                      <option value="ml">ml</option>
+                      <option value="l">l</option>
+                      <option value="ud">ud</option>
+                    </select>
+                  </label>
+                  <label>
+                    Unidades
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={row.quantityPurchased}
+                      onChange={(event) =>
+                        updateRow(row.key, { quantityPurchased: parseNumber(event.target.value) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Fecha
+                    <input
+                      type="date"
+                      value={row.date}
+                      onChange={(event) => updateRow(row.key, { date: event.target.value })}
+                    />
+                  </label>
+                  <button
+                    className="icon-btn danger"
+                    type="button"
+                    aria-label="Eliminar última observación"
+                    title="Elimina solo esta observación; conserva las anteriores"
+                    onClick={() => updateRow(row.key, { removed: true })}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            {!rows.some((row) => !row.removed) && (
+              <Empty text="Añade un supermercado para registrar su precio." />
+            )}
           </div>
-          <button className="ghost add-offer-button" type="button" onClick={addStore}><Plus size={16} /> Añadir otro supermercado</button>
+          <button className="ghost add-offer-button" type="button" onClick={addStore}>
+            <Plus size={16} /> Añadir otro supermercado
+          </button>
           <div className="modal-footer">
-            <span className="error">{error}</span>
-            <div><button className="ghost" type="button" onClick={onClose}>Cancelar</button><button className="primary" type="button" onClick={() => void saveOffers()}><Save size={17} /> Guardar cambios</button></div>
+            <span className="error" role="alert">
+              {error}
+            </span>
+            <div>
+              <button className="ghost" type="button" disabled={saving} onClick={onClose}>
+                Cancelar
+              </button>
+              <button
+                className="primary"
+                type="button"
+                disabled={saving}
+                onClick={() => void saveOffers()}
+              >
+                <Save size={17} /> {saving ? "Guardando…" : "Guardar precios y fechas"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2070,7 +2361,11 @@ function ProductPriceEditor({
   const [saving, setSaving] = useState(false);
 
   function openEditor() {
-    setPrice(latest ? Math.max(0, latest.price - latest.discount) : 0);
+    setPrice(
+      latest
+        ? Math.max(0, latest.price - latest.discount) / Math.max(1, latest.quantityPurchased)
+        : 0,
+    );
     setDate(todayISO());
     setSupermarketId(latest?.supermarketId ?? supermarkets[0]?.id ?? 0);
     setPackageAmount(latest?.packageAmount ?? 1);
@@ -2134,7 +2429,9 @@ function ProductPriceEditor({
       <div className="price-history-editor-head">
         <div>
           <strong>Evolución del precio</strong>
-          <span>Añade un precio con su fecha. Los anteriores se conservan para mostrar la evolución.</span>
+          <span>
+            Añade un precio con su fecha. Los anteriores se conservan para mostrar la evolución.
+          </span>
         </div>
         <button
           className={open ? "ghost" : "primary"}
@@ -2170,7 +2467,8 @@ function ProductPriceEditor({
               <option value={0}>Seleccionar…</option>
               {supermarkets.map((supermarket) => (
                 <option key={supermarket.id} value={supermarket.id}>
-                  {supermarket.name}{supermarket.locality ? ` · ${supermarket.locality}` : ""}
+                  {supermarket.name}
+                  {supermarket.locality ? ` · ${supermarket.locality}` : ""}
                 </option>
               ))}
             </select>
@@ -2248,38 +2546,86 @@ function missingPublicPhotoColumn(error: { message?: string }) {
   return error.message?.includes("photo_data_url") ?? false;
 }
 
-async function publishProductsToPublicCatalog(products: Product[], userId: string) {
-  const publishable = products.filter(
-    (product): product is Product & { id: number } => Boolean(product.id),
-  );
-  if (!publishable.length) return { count: 0 };
-  const rows = await Promise.all(
-    publishable.map(async (product) => ({
-      owner_id: userId,
-      source_product_id: product.id,
-      name: product.name,
-      brand: product.brand,
-      generic_name: product.genericName,
-      category: product.category,
-      purchase_url: product.purchaseUrl || null,
-      photo_data_url: await publicPhotoDataUrl(product),
-      rating: product.rating,
-      notes: product.notes,
-    })),
-  );
-  const { error } = await supabase
-    .from("public_products")
-    .upsert(rows, { onConflict: "owner_id,source_product_id" });
-  if (!error) return { count: rows.length };
-  return {
-    count: 0,
-    error: missingPublicPhotoColumn(error)
-      ? "No se pudo sincronizar: falta activar el campo de imágenes del catálogo en Supabase."
-      : `No se pudo sincronizar el catálogo público: ${error.message}`,
-  };
+let catalogWrite: Promise<unknown> = Promise.resolve();
+function publishProductsToPublicCatalog(
+  userId: string,
+): Promise<{ count: number; error?: string }> {
+  const operation = catalogWrite
+    .then(() => reconcilePublicCatalog(userId))
+    .catch((error: unknown) => ({
+      count: 0,
+      error:
+        error instanceof Error
+          ? error.message
+          : "No se pudo publicar. Tus datos locales se conservan.",
+    }));
+  catalogWrite = operation.catch(() => undefined);
+  return operation;
 }
 
-function publicProductForMatching(product: PublicCatalogProduct): ImportedProduct {
+async function reconcilePublicCatalog(userId: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const products = await db.products.toArray();
+    const deletionKey = catalogDeletionsKey(userId);
+    const deletions = ((await db.appSettings.get(deletionKey))?.value ?? []) as number[];
+    if (deletions.length) {
+      const { error } = await supabase
+        .from("public_products")
+        .delete()
+        .eq("owner_id", userId)
+        .in("source_product_id", deletions)
+        .abortSignal(controller.signal);
+      if (error) return { count: 0, error: error.message };
+      await db.transaction("rw", db.appSettings, async () => {
+        const current = ((await db.appSettings.get(deletionKey))?.value ?? []) as number[];
+        const remaining = current.filter((id) => !deletions.includes(id));
+        if (remaining.length)
+          await db.appSettings.put({
+            key: deletionKey,
+            value: remaining,
+            updatedAt: new Date().toISOString(),
+          });
+        else await db.appSettings.delete(deletionKey);
+      });
+    }
+    const publishable = products.filter(
+      (product): product is Product & { id: number } =>
+        Boolean(product.id) && !deletions.includes(product.id!),
+    );
+    if (!publishable.length) return { count: 0 };
+    const rows = await Promise.all(
+      publishable.map(async (product) => ({
+        owner_id: userId,
+        source_product_id: product.id,
+        name: product.name,
+        brand: product.brand,
+        generic_name: product.genericName,
+        category: productCategory(product.name, product.category),
+        purchase_url: product.purchaseUrl || null,
+        photo_data_url: await publicPhotoDataUrl(product),
+        rating: product.rating,
+        notes: product.notes,
+      })),
+    );
+    const { error } = await supabase
+      .from("public_products")
+      .upsert(rows, { onConflict: "owner_id,source_product_id" })
+      .abortSignal(controller.signal);
+    if (!error) return { count: rows.length };
+    return {
+      count: 0,
+      error: missingPublicPhotoColumn(error)
+        ? "No se pudo sincronizar: falta activar el campo de imágenes del catálogo en Supabase."
+        : `No se pudo sincronizar el catálogo público: ${error.message}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function publicProductForMatching(product: PublicCatalogProduct): Product {
   return {
     name: product.name,
     brand: product.brand,
@@ -2287,12 +2633,12 @@ function publicProductForMatching(product: PublicCatalogProduct): ImportedProduc
     category: product.category,
     rating: product.rating,
     notes: product.notes,
-    purchaseUrl: product.purchase_url ?? undefined,
+    ...(product.purchase_url ? { purchaseUrl: product.purchase_url } : {}),
     ...importedPhotoFields(product.photo_data_url, product.name),
   };
 }
 
-function submissionForMatching(product: ProductSubmission): ImportedProduct {
+function submissionForMatching(product: ProductSubmission): Product {
   return {
     name: product.name,
     brand: product.brand,
@@ -2300,7 +2646,7 @@ function submissionForMatching(product: ProductSubmission): ImportedProduct {
     category: product.category,
     rating: product.rating,
     notes: product.notes,
-    purchaseUrl: product.purchase_url ?? undefined,
+    ...(product.purchase_url ? { purchaseUrl: product.purchase_url } : {}),
     ...importedPhotoFields(product.photo_data_url, product.name),
   };
 }
@@ -2320,19 +2666,30 @@ function PublicCatalogView() {
   const [senderName, setSenderName] = useState("");
   const [senderEmail, setSenderEmail] = useState("");
   const [submittingProducts, setSubmittingProducts] = useState(false);
+  const catalogLoadVersion = useRef(0);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
   const isCatalogAdmin = user?.email?.toLocaleLowerCase("es-ES") === PUBLIC_CATALOG_ADMIN_EMAIL;
 
   async function loadPublicProducts() {
+    const version = ++catalogLoadVersion.current;
     setLoading(true);
-    const { data, error } = await supabase
-      .from("public_products")
-      .select("*")
-      .order("updated_at", { ascending: false });
-    if (error) setStatus(`No se pudo abrir el catálogo: ${error.message}`);
-    else setProducts((data ?? []) as PublicCatalogProduct[]);
-    setLoading(false);
+    try {
+      const { data, error } = await supabase
+        .from("public_products")
+        .select("*")
+        .order("updated_at", { ascending: false });
+      if (version !== catalogLoadVersion.current) return;
+      if (error) setStatus(`No se pudo abrir el catálogo: ${error.message}`);
+      else setProducts((data ?? []) as PublicCatalogProduct[]);
+    } catch {
+      if (version === catalogLoadVersion.current)
+        setStatus(
+          "No se pudo conectar con el catálogo. Comprueba la conexión y vuelve a abrir esta sección.",
+        );
+    } finally {
+      if (version === catalogLoadVersion.current) setLoading(false);
+    }
   }
 
   async function loadSubmissions() {
@@ -2352,8 +2709,16 @@ function PublicCatalogView() {
   useEffect(() => {
     void supabase.auth.getUser().then(({ data }) => setUser(data.user));
     void loadPublicProducts();
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
-    return () => data.subscription.unsubscribe();
+    const reloadCatalog = () => void loadPublicProducts();
+    window.addEventListener("smartmarket-catalog-published", reloadCatalog);
+    const { data } = supabase.auth.onAuthStateChange((_event, session) =>
+      setUser(session?.user ?? null),
+    );
+    return () => {
+      data.subscription.unsubscribe();
+      catalogLoadVersion.current += 1;
+      window.removeEventListener("smartmarket-catalog-published", reloadCatalog);
+    };
   }, []);
 
   useEffect(() => {
@@ -2387,9 +2752,13 @@ function PublicCatalogView() {
     const result: Record<number, "exact" | "similar"> = {};
     localProducts.forEach((local) => {
       if (!local.id) return;
-      if (products.some((product) => productsMatchExactly(local, publicProductForMatching(product))))
+      if (
+        products.some((product) => productsMatchExactly(local, publicProductForMatching(product)))
+      )
         result[local.id] = "exact";
-      else if (products.some((product) => productsLookSimilar(local, publicProductForMatching(product))))
+      else if (
+        products.some((product) => productsLookSimilar(local, publicProductForMatching(product)))
+      )
         result[local.id] = "similar";
     });
     return result;
@@ -2408,7 +2777,9 @@ function PublicCatalogView() {
         const similarPublic = products.some((product) =>
           productsLookSimilar(publicProductForMatching(product), incoming),
         );
-        const similarLocal = localProducts.some((product) => productsLookSimilar(product, incoming));
+        const similarLocal = localProducts.some((product) =>
+          productsLookSimilar(product, incoming),
+        );
         if (similarPublic || similarLocal) result[submission.id] = "similar";
       }
     });
@@ -2434,13 +2805,11 @@ function PublicCatalogView() {
   }
 
   async function sendProductsForReview() {
-    const chosen = localProducts.filter(
-      (product): product is Product & { id: number } =>
-        Boolean(product.id && selectedForSubmission.includes(product.id)),
+    const chosen = localProducts.filter((product): product is Product & { id: number } =>
+      Boolean(product.id && selectedForSubmission.includes(product.id)),
     );
     if (!chosen.length) return setStatus("Selecciona al menos un producto para enviarlo.");
-    if (chosen.length > 25)
-      return setStatus("Puedes enviar un máximo de 25 productos cada vez.");
+    if (chosen.length > 25) return setStatus("Puedes enviar un máximo de 25 productos cada vez.");
     const cleanEmail = senderEmail.trim();
     if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail))
       return setStatus("Revisa el correo de contacto o déjalo vacío.");
@@ -2475,7 +2844,9 @@ function PublicCatalogView() {
     }
     setShowSubmissionForm(false);
     setSelectedForSubmission([]);
-    setStatus(`${rows.length} productos enviados. El administrador los revisará antes de publicarlos.`);
+    setStatus(
+      `${rows.length} productos enviados. El administrador los revisará antes de publicarlos.`,
+    );
   }
 
   async function resolveSubmission(
@@ -2487,7 +2858,9 @@ function PublicCatalogView() {
       if (!confirm(`¿Rechazar la propuesta “${submission.name}”?`)) return;
     } else if (
       submissionMatches[submission.id] === "similar" &&
-      !confirm(`“${submission.name}” parece similar a un producto existente. ¿Publicarlo igualmente?`)
+      !confirm(
+        `“${submission.name}” parece similar a un producto existente. ¿Publicarlo igualmente?`,
+      )
     )
       return;
 
@@ -2507,7 +2880,7 @@ function PublicCatalogView() {
           category: incoming.category || "Otros",
           rating: incoming.rating,
           notes: incoming.notes,
-          purchaseUrl: incoming.purchaseUrl,
+          ...(incoming.purchaseUrl ? { purchaseUrl: incoming.purchaseUrl } : {}),
           ...submissionPhoto,
         }));
       const photoDataUrl = exactLocal
@@ -2576,7 +2949,7 @@ function PublicCatalogView() {
   async function publishAll() {
     if (!user) return setStatus("Inicia sesión como administrador para publicar productos.");
     if (!isCatalogAdmin) return setStatus("Esta cuenta no tiene permiso para publicar productos.");
-    const result = await publishProductsToPublicCatalog(localProducts, user.id);
+    const result = await publishProductsToPublicCatalog(user.id);
     if (result.error) return setStatus(result.error);
     if (!result.count) return setStatus("No tienes productos locales para publicar.");
     setStatus(`${result.count} productos publicados o actualizados.`);
@@ -2599,17 +2972,19 @@ function PublicCatalogView() {
         name: product.name,
         brand: product.brand,
         genericName: product.generic_name || product.name,
-        category: product.category || "Otros",
+        category: productCategory(product.name, product.category),
         rating: product.rating,
         notes: product.notes,
-        purchaseUrl: product.purchase_url ?? undefined,
+        ...(product.purchase_url ? { purchaseUrl: product.purchase_url } : {}),
         ...importedPhotoFields(product.photo_data_url, product.name),
       };
       const id = await db.products.add(newProduct);
       knownProducts.push({ ...newProduct, id });
       added += 1;
     }
-    setStatus(`${added} productos añadidos a tu catálogo${skipped ? `; ${skipped} repetidos omitidos` : ""}.`);
+    setStatus(
+      `${added} productos añadidos a tu catálogo${skipped ? `; ${skipped} repetidos omitidos` : ""}.`,
+    );
     setSelected([]);
   }
 
@@ -2627,7 +3002,10 @@ function PublicCatalogView() {
         <div>
           <span className="eyebrow">COMPARTIDO EN LA NUBE</span>
           <h2>Catálogo público</h2>
-          <p>Productos visibles para cualquiera que abra SmartMarket. Tus compras siguen siendo privadas.</p>
+          <p>
+            Productos visibles para cualquiera que abra SmartMarket. Tus compras siguen siendo
+            privadas.
+          </p>
         </div>
         <input
           className="search"
@@ -2637,157 +3015,196 @@ function PublicCatalogView() {
         />
       </div>
 
-      <div className="panel public-account-panel">
-        {user ? (
-          <>
-            <div>
-              <strong>{isCatalogAdmin ? `Administrador: ${user.email}` : `Sesión: ${user.email}`}</strong>
-              <span>
-                {isCatalogAdmin
-                  ? "Solo esta cuenta puede publicar, actualizar o retirar productos."
-                  : "Esta cuenta puede consultar e incorporar productos, pero no publicarlos."}
-              </span>
-            </div>
-            <div className="public-account-actions">
-              {isCatalogAdmin && (
-                <button className="primary" type="button" onClick={() => void publishAll()}>
-                  <Globe2 size={17} /> Publicar todos mis productos
+      <details className="public-secondary-tools">
+        <summary>
+          {isCatalogAdmin ? "Administración del catálogo" : "Acceso de administrador"}
+        </summary>
+        <div className="panel public-account-panel">
+          {user ? (
+            <>
+              <div>
+                <strong>
+                  {isCatalogAdmin ? `Administrador: ${user.email}` : `Sesión: ${user.email}`}
+                </strong>
+                <span>
+                  {isCatalogAdmin
+                    ? "Solo esta cuenta puede publicar, actualizar o retirar productos."
+                    : "Esta cuenta puede consultar e incorporar productos, pero no publicarlos."}
+                </span>
+              </div>
+              <div className="public-account-actions">
+                {isCatalogAdmin && (
+                  <button className="primary" type="button" onClick={() => void publishAll()}>
+                    <Globe2 size={17} /> Publicar todos mis productos
+                  </button>
+                )}
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() => void supabase.auth.signOut()}
+                >
+                  Cerrar sesión
                 </button>
-              )}
-              <button className="ghost" type="button" onClick={() => void supabase.auth.signOut()}>
-                Cerrar sesión
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div>
-              <strong>Acceso del administrador</strong>
-              <span>Para mirar o incorporar productos no necesitas iniciar sesión.</span>
-            </div>
-            <div className="public-login-fields">
-              <input type="email" placeholder="Correo" value={email} onChange={(event) => setEmail(event.target.value)} />
-              <input type="password" placeholder="Contraseña" value={password} onChange={(event) => setPassword(event.target.value)} />
-              <button className="primary" type="button" onClick={() => void signIn()}>Entrar</button>
-              <button className="ghost" type="button" onClick={() => void signUp()}>Crear cuenta de administrador</button>
-            </div>
-          </>
-        )}
-      </div>
-
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <strong>Acceso del administrador</strong>
+                <span>Para mirar o incorporar productos no necesitas iniciar sesión.</span>
+              </div>
+              <div className="public-login-fields">
+                <input
+                  type="email"
+                  aria-label="Correo del administrador"
+                  autoComplete="username"
+                  placeholder="Correo"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+                <input
+                  type="password"
+                  aria-label="Contraseña"
+                  autoComplete="current-password"
+                  placeholder="Contraseña"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+                <button className="primary" type="button" onClick={() => void signIn()}>
+                  Entrar
+                </button>
+                <button className="ghost" type="button" onClick={() => void signUp()}>
+                  Crear cuenta de administrador
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </details>
       {status && <div className="catalog-status">{status}</div>}
 
       {!isCatalogAdmin && (
-        <div className="panel contribution-panel">
-          <div className="contribution-heading">
-            <div className="contribution-icon"><Send size={21} /></div>
-            <div>
-              <strong>Comparte tus productos con la comunidad</strong>
-              <span>
-                Elige productos de tu catálogo y envíalos al administrador. No se comparten
-                compras, listas ni precios privados.
-              </span>
+        <details className="public-secondary-tools">
+          <summary>Compartir productos con la comunidad</summary>
+          <div className="panel contribution-panel">
+            <div className="contribution-heading">
+              <div className="contribution-icon">
+                <Send size={21} />
+              </div>
+              <div>
+                <strong>Comparte tus productos con la comunidad</strong>
+                <span>
+                  Elige productos de tu catálogo y envíalos al administrador. No se comparten
+                  compras, listas ni precios privados.
+                </span>
+              </div>
             </div>
+            {!showSubmissionForm ? (
+              <button
+                className="primary"
+                type="button"
+                disabled={!localProducts.length}
+                onClick={openSubmissionForm}
+              >
+                <Send size={16} /> Enviar productos para revisión
+              </button>
+            ) : (
+              <div className="contribution-form">
+                <div className="contribution-contact-fields">
+                  <label>
+                    Tu nombre (opcional)
+                    <input
+                      value={senderName}
+                      maxLength={100}
+                      onChange={(event) => setSenderName(event.target.value)}
+                      placeholder="Nombre"
+                    />
+                  </label>
+                  <label>
+                    Tu correo (opcional)
+                    <input
+                      type="email"
+                      value={senderEmail}
+                      maxLength={180}
+                      onChange={(event) => setSenderEmail(event.target.value)}
+                      placeholder="correo@ejemplo.com"
+                    />
+                  </label>
+                </div>
+                <div className="contribution-selection-head">
+                  <strong>{selectedForSubmission.length} seleccionados</strong>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() =>
+                      setSelectedForSubmission(
+                        localProducts.flatMap((product) =>
+                          product.id && !localPublicationMatches[product.id] ? [product.id] : [],
+                        ),
+                      )
+                    }
+                  >
+                    Seleccionar no publicados
+                  </button>
+                </div>
+                <div className="contribution-product-list">
+                  {localProducts.map((product) => {
+                    if (!product.id) return null;
+                    const match = localPublicationMatches[product.id];
+                    return (
+                      <label
+                        className={
+                          selectedForSubmission.includes(product.id)
+                            ? "contribution-product selected"
+                            : "contribution-product"
+                        }
+                        key={product.id}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedForSubmission.includes(product.id)}
+                          disabled={match === "exact"}
+                          onChange={() => toggleSubmissionProduct(product.id!)}
+                        />
+                        <span>
+                          <strong>{product.name}</strong>
+                          <small>
+                            {product.brand || "Sin marca"} · {product.category}
+                          </small>
+                        </span>
+                        {match === "exact" ? (
+                          <em>YA PUBLICADO</em>
+                        ) : match === "similar" ? (
+                          <em className="similar">SIMILAR</em>
+                        ) : (
+                          <em className="new">NUEVO</em>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="contribution-actions">
+                  <button
+                    className="ghost"
+                    type="button"
+                    onClick={() => setShowSubmissionForm(false)}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={!selectedForSubmission.length || submittingProducts}
+                    onClick={() => void sendProductsForReview()}
+                  >
+                    <Send size={16} />
+                    {submittingProducts ? "Enviando…" : "Enviar al administrador"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-          {!showSubmissionForm ? (
-            <button
-              className="primary"
-              type="button"
-              disabled={!localProducts.length}
-              onClick={openSubmissionForm}
-            >
-              <Send size={16} /> Enviar productos para revisión
-            </button>
-          ) : (
-            <div className="contribution-form">
-              <div className="contribution-contact-fields">
-                <label>
-                  Tu nombre (opcional)
-                  <input
-                    value={senderName}
-                    maxLength={100}
-                    onChange={(event) => setSenderName(event.target.value)}
-                    placeholder="Nombre"
-                  />
-                </label>
-                <label>
-                  Tu correo (opcional)
-                  <input
-                    type="email"
-                    value={senderEmail}
-                    maxLength={180}
-                    onChange={(event) => setSenderEmail(event.target.value)}
-                    placeholder="correo@ejemplo.com"
-                  />
-                </label>
-              </div>
-              <div className="contribution-selection-head">
-                <strong>{selectedForSubmission.length} seleccionados</strong>
-                <button
-                  className="text-button"
-                  type="button"
-                  onClick={() =>
-                    setSelectedForSubmission(
-                      localProducts.flatMap((product) =>
-                        product.id && !localPublicationMatches[product.id] ? [product.id] : [],
-                      ),
-                    )
-                  }
-                >
-                  Seleccionar no publicados
-                </button>
-              </div>
-              <div className="contribution-product-list">
-                {localProducts.map((product) => {
-                  if (!product.id) return null;
-                  const match = localPublicationMatches[product.id];
-                  return (
-                    <label
-                      className={
-                        selectedForSubmission.includes(product.id)
-                          ? "contribution-product selected"
-                          : "contribution-product"
-                      }
-                      key={product.id}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedForSubmission.includes(product.id)}
-                        disabled={match === "exact"}
-                        onChange={() => toggleSubmissionProduct(product.id!)}
-                      />
-                      <span>
-                        <strong>{product.name}</strong>
-                        <small>{product.brand || "Sin marca"} · {product.category}</small>
-                      </span>
-                      {match === "exact" ? (
-                        <em>YA PUBLICADO</em>
-                      ) : match === "similar" ? (
-                        <em className="similar">SIMILAR</em>
-                      ) : (
-                        <em className="new">NUEVO</em>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-              <div className="contribution-actions">
-                <button className="ghost" type="button" onClick={() => setShowSubmissionForm(false)}>
-                  Cancelar
-                </button>
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={!selectedForSubmission.length || submittingProducts}
-                  onClick={() => void sendProductsForReview()}
-                >
-                  <Send size={16} />
-                  {submittingProducts ? "Enviando…" : "Enviar al administrador"}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+        </details>
       )}
 
       {isCatalogAdmin && (
@@ -2795,7 +3212,9 @@ function PublicCatalogView() {
           <div className="moderation-heading">
             <div>
               <span className="eyebrow">BANDEJA DEL ADMINISTRADOR</span>
-              <h3><Inbox size={20} /> Productos pendientes de validar</h3>
+              <h3>
+                <Inbox size={20} /> Productos pendientes de validar
+              </h3>
             </div>
             <strong>{submissions.length}</strong>
           </div>
@@ -2805,7 +3224,8 @@ function PublicCatalogView() {
             <div className="moderation-list">
               {submissions.map((submission) => {
                 const match = submissionMatches[submission.id];
-                const sender = submission.sender_name || submission.sender_email || "Usuario anónimo";
+                const sender =
+                  submission.sender_name || submission.sender_email || "Usuario anónimo";
                 return (
                   <article className="moderation-product" key={submission.id}>
                     {submission.photo_data_url && (
@@ -2819,7 +3239,8 @@ function PublicCatalogView() {
                       <span className="eyebrow">{submission.category}</span>
                       <strong>{submission.name}</strong>
                       <small>
-                        {submission.brand || "Sin marca"} · Enviado por {sender} · {new Date(submission.created_at).toLocaleDateString("es-ES")}
+                        {submission.brand || "Sin marca"} · Enviado por {sender} ·{" "}
+                        {new Date(submission.created_at).toLocaleDateString("es-ES")}
                       </small>
                     </div>
                     <div className="moderation-product-flags">
@@ -2831,16 +3252,28 @@ function PublicCatalogView() {
                         <em className="new">NUEVO</em>
                       )}
                       {submission.purchase_url && (
-                        <a href={submission.purchase_url} target="_blank" rel="noopener noreferrer sponsored">
+                        <a
+                          href={submission.purchase_url}
+                          target="_blank"
+                          rel="noopener noreferrer sponsored"
+                        >
                           Revisar enlace <ExternalLink size={13} />
                         </a>
                       )}
                     </div>
                     <div className="moderation-actions">
-                      <button className="ghost danger" type="button" onClick={() => void resolveSubmission(submission, "rejected")}>
+                      <button
+                        className="ghost danger"
+                        type="button"
+                        onClick={() => void resolveSubmission(submission, "rejected")}
+                      >
                         <X size={15} /> Rechazar
                       </button>
-                      <button className="primary" type="button" onClick={() => void resolveSubmission(submission, "approved")}>
+                      <button
+                        className="primary"
+                        type="button"
+                        onClick={() => void resolveSubmission(submission, "approved")}
+                      >
                         <Check size={15} /> Aprobar y publicar
                       </button>
                     </div>
@@ -2853,35 +3286,67 @@ function PublicCatalogView() {
       )}
 
       <div className="public-catalog-tools">
-        <span>{filtered.length} productos · {selected.length} seleccionados</span>
+        <span>
+          {filtered.length} productos · {selected.length} seleccionados
+        </span>
         <div>
-          <button className="ghost" type="button" onClick={() => setSelected(filtered.flatMap((product) => (matches[product.id] ? [] : [product.id])))}>
+          <button
+            className="ghost"
+            type="button"
+            onClick={() =>
+              setSelected(filtered.flatMap((product) => (matches[product.id] ? [] : [product.id])))
+            }
+          >
             Seleccionar nuevos
           </button>
-          <button className="primary" type="button" disabled={!selected.length} onClick={() => void importSelected()}>
+          <button
+            className="primary"
+            type="button"
+            disabled={!selected.length}
+            onClick={() => void importSelected()}
+          >
             <Plus size={17} /> Añadir seleccionados
           </button>
         </div>
       </div>
 
       {loading ? (
-        <div className="panel"><Empty text="Cargando el catálogo público…" /></div>
+        <div className="panel">
+          <Empty text="Cargando el catálogo público…" />
+        </div>
       ) : filtered.length === 0 ? (
-        <div className="panel"><Empty text="Todavía no hay productos públicos que coincidan." /></div>
+        <div className="panel">
+          <Empty text="Todavía no hay productos públicos que coincidan." />
+        </div>
       ) : (
         <div className="public-product-grid">
           {filtered.map((product) => {
             const match = matches[product.id];
             const checked = selected.includes(product.id);
             return (
-              <article className={checked ? "public-product-card selected" : "public-product-card"} key={product.id}>
+              <article
+                className={checked ? "public-product-card selected" : "public-product-card"}
+                key={product.id}
+              >
                 <label className="public-product-select">
                   <input
                     type="checkbox"
                     checked={checked}
-                    onChange={() => setSelected((current) => current.includes(product.id) ? current.filter((id) => id !== product.id) : [...current, product.id])}
+                    onChange={() =>
+                      setSelected((current) =>
+                        current.includes(product.id)
+                          ? current.filter((id) => id !== product.id)
+                          : [...current, product.id],
+                      )
+                    }
                   />
-                  {match === "exact" ? <em>Ya lo tienes</em> : match === "similar" ? <em className="similar">Producto similar</em> : <em className="new">Nuevo</em>}
+                  {match === "exact" ? (
+                    <em>Ya lo tienes</em>
+                  ) : match === "similar" ? (
+                    <em className="similar">Producto similar</em>
+                  ) : (
+                    <em className="new">Nuevo</em>
+                  )}
                 </label>
                 {product.photo_data_url && (
                   <img
@@ -2891,23 +3356,36 @@ function PublicCatalogView() {
                   />
                 )}
                 <div>
-                  <span className="eyebrow">{product.category}</span>
+                  <span className="eyebrow">{productCategory(product.name, product.category)}</span>
                   {product.purchase_url && (
                     <span className="recommendation-badge public-recommendation-badge">
                       Recomendado en {purchaseStoreName(product.purchase_url)}
                     </span>
                   )}
                   <h3>{product.name}</h3>
-                  <p>{product.brand || "Sin marca"} · Equivale a {product.generic_name || product.name}</p>
+                  <p>
+                    {product.brand || "Sin marca"} · Equivale a{" "}
+                    {product.generic_name || product.name}
+                  </p>
                 </div>
                 <div className="public-product-actions">
                   {product.purchase_url && (
-                    <a className="buy-link" href={product.purchase_url} target="_blank" rel="noopener noreferrer sponsored">
+                    <a
+                      className="buy-link"
+                      href={product.purchase_url}
+                      target="_blank"
+                      rel="noopener noreferrer sponsored"
+                    >
                       Ver en {purchaseStoreName(product.purchase_url)} <ExternalLink size={14} />
                     </a>
                   )}
                   {isCatalogAdmin && user?.id === product.owner_id && (
-                    <button className="icon-btn danger" type="button" title="Retirar del catálogo" onClick={() => void removePublished(product)}>
+                    <button
+                      className="icon-btn danger"
+                      type="button"
+                      title="Retirar del catálogo"
+                      onClick={() => void removePublished(product)}
+                    >
                       <Trash2 size={15} />
                     </button>
                   )}
@@ -2924,7 +3402,9 @@ function PublicCatalogView() {
           Amazon. El precio para ti no cambia. Gracias por tu colaboración.
         </span>
       </div>
-      <p className="affiliate-note">Los enlaces de compra abren tiendas externas y algunos pueden ser enlaces de afiliado.</p>
+      <p className="affiliate-note">
+        Los enlaces de compra abren tiendas externas y algunos pueden ser enlaces de afiliado.
+      </p>
     </section>
   );
 }
@@ -2967,8 +3447,7 @@ function SupermarketsView() {
     const duplicate = supermarkets.some(
       (store) =>
         store.id !== editingId &&
-        store.name.trim().toLocaleLowerCase("es-ES") ===
-          cleanName.toLocaleLowerCase("es-ES") &&
+        store.name.trim().toLocaleLowerCase("es-ES") === cleanName.toLocaleLowerCase("es-ES") &&
         (store.locality ?? "").trim().toLocaleLowerCase("es-ES") ===
           cleanLocality.toLocaleLowerCase("es-ES"),
     );
@@ -3053,8 +3532,17 @@ function SupermarketsView() {
                 (a.locality ?? "").localeCompare(b.locality ?? "", "es"),
             )
             .map((supermarket) => (
-              <div className={editingId === supermarket.id ? "supermarket-admin-row editing" : "supermarket-admin-row"} key={supermarket.id}>
-                <div className="store-icon"><Store size={17} /></div>
+              <div
+                className={
+                  editingId === supermarket.id
+                    ? "supermarket-admin-row editing"
+                    : "supermarket-admin-row"
+                }
+                key={supermarket.id}
+              >
+                <div className="store-icon">
+                  <Store size={17} />
+                </div>
                 <div>
                   <strong>{supermarket.name}</strong>
                   <span>
@@ -3100,7 +3588,7 @@ function StoreProductDirectory({
       const latestByProduct = new Map<number, Purchase>();
       purchases
         .filter((purchase) => purchase.supermarketId === supermarket.id)
-        .sort((a, b) => b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0))
+        .sort(newestFirst)
         .forEach((purchase) => {
           if (!latestByProduct.has(purchase.productId))
             latestByProduct.set(purchase.productId, purchase);
@@ -3184,9 +3672,12 @@ function PublicOffersPanel({ query }: { query: string }) {
       setLoading(true);
       setError("");
       try {
-        const response = await fetch(`/api/offers?q=${encodeURIComponent(query)}&location=${encodeURIComponent(priceLocation)}`, {
-          signal: controller.signal,
-        });
+        const response = await fetch(
+          `/api/offers?q=${encodeURIComponent(query)}&location=${encodeURIComponent(priceLocation)}`,
+          {
+            signal: controller.signal,
+          },
+        );
         if (!response.ok) throw new Error("No se han podido consultar las ofertas.");
         setResult((await response.json()) as PublicOffersResponse);
       } catch (fetchError) {
@@ -3215,9 +3706,7 @@ function PublicOffersPanel({ query }: { query: string }) {
         <div>
           <span className="eyebrow">PRECIOS EN LA RED</span>
           <h3>Ofertas públicas a 25 km de Getxo</h3>
-          <p>
-            Buscando “{query}” en catálogos públicos. El precio online puede variar en tienda.
-          </p>
+          <p>Buscando “{query}” en catálogos públicos. El precio online puede variar en tienda.</p>
         </div>
         <Globe2 size={22} />
       </div>
@@ -3274,17 +3763,27 @@ function PublicOffersPanel({ query }: { query: string }) {
           )}
           <div className="public-source-links">
             <span>
-              Consultado {new Date(result.checkedAt).toLocaleString("es-ES", { timeStyle: "short", dateStyle: "short" })}
+              Consultado{" "}
+              {new Date(result.checkedAt).toLocaleString("es-ES", {
+                timeStyle: "short",
+                dateStyle: "short",
+              })}
             </span>
             {result.sources.map((source) => (
-              <a href={source.url} target="_blank" rel="noopener noreferrer" key={source.supermarket}>
+              <a
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                key={source.supermarket}
+              >
                 {source.supermarket}: {source.label} <ExternalLink size={12} />
               </a>
             ))}
           </div>
           <p className="public-search-area">
-            <MapPin size={13} /> Radio de {result.searchArea.radiusKm} km desde {result.searchArea.center}:
-            {" "}{result.searchArea.municipalities.join(", ")} y municipios próximos.
+            <MapPin size={13} /> Radio de {result.searchArea.radiusKm} km desde{" "}
+            {result.searchArea.center}: {result.searchArea.municipalities.join(", ")} y municipios
+            próximos.
           </p>
         </>
       ) : null}
@@ -3298,7 +3797,7 @@ function ShoppingListView() {
   const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
   const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
   const items = useMemo(() => itemRecords ?? [], [itemRecords]);
-  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const products = useMemo(() => canonicalProducts(productRecords ?? []), [productRecords]);
   const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const [productId, setProductId] = useState("");
@@ -3321,7 +3820,6 @@ function ShoppingListView() {
 
   const activeItems = items.filter((item) => !item.checked);
 
-
   const priceOptions = useMemo(() => {
     return activeItems.map((item) => {
       const selectedProduct = products.find((product) => product.id === item.productId);
@@ -3336,7 +3834,7 @@ function ShoppingListView() {
       const byStore = new Map<number, Purchase>();
       purchases
         .filter((purchase) => equivalentIds.has(purchase.productId))
-        .sort((a, b) => b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0))
+        .sort(newestFirst)
         .forEach((purchase) => {
           if (!byStore.has(purchase.supermarketId)) byStore.set(purchase.supermarketId, purchase);
         });
@@ -3544,15 +4042,17 @@ function ShoppingListView() {
                 <div className="split-saving">
                   <Sparkles size={16} />
                   <span>
-                    Ahorras <strong>{money(splitSavings)}</strong> frente a comprar toda la lista
-                    en {bestCompleteStore.supermarket.name}.
+                    Ahorras <strong>{money(splitSavings)}</strong> frente a comprar toda la lista en{" "}
+                    {bestCompleteStore.supermarket.name}.
                   </span>
                 </div>
               )}
               {splitByStore.map((group) => (
                 <div className="split-store-group" key={group.supermarket?.id ?? "unknown"}>
                   <div className="split-store-head">
-                    <span><Store size={15} /> {group.supermarket?.name || "Supermercado"}</span>
+                    <span>
+                      <Store size={15} /> {group.supermarket?.name || "Supermercado"}
+                    </span>
                     <strong>{money(group.total)}</strong>
                   </div>
                   {group.rows.map((row) => (
@@ -3560,7 +4060,8 @@ function ShoppingListView() {
                       <div>
                         <strong>{row.product.genericName || row.product.name}</strong>
                         <span>
-                          {row.item.quantity} × {money(packagePrice(row.purchase))} · {row.purchase.packageAmount} {row.purchase.packageUnit}
+                          {row.item.quantity} × {money(packagePrice(row.purchase))} ·{" "}
+                          {row.purchase.packageAmount} {row.purchase.packageUnit}
                         </span>
                       </div>
                       <div>
@@ -3641,7 +4142,7 @@ function CompareView() {
   const productRecords = useLiveQuery(() => db.products.toArray(), []);
   const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
   const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
-  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const products = useMemo(() => canonicalProducts(productRecords ?? []), [productRecords]);
   const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const genericNames = useMemo(
@@ -3679,7 +4180,7 @@ function CompareView() {
       const byStore = new Map<number, Purchase>();
       purchases
         .filter((p) => p.productId === product.id)
-        .sort((a, b) => b.date.localeCompare(a.date))
+        .sort(newestFirst)
         .forEach((p) => {
           if (!byStore.has(p.supermarketId)) byStore.set(p.supermarketId, p);
         });
@@ -3898,7 +4399,7 @@ function HistoryView() {
   const productRecords = useLiveQuery(() => db.products.toArray(), []);
   const purchaseRecords = useLiveQuery(() => db.purchases.toArray(), []);
   const supermarketRecords = useLiveQuery(() => db.supermarkets.toArray(), []);
-  const products = useMemo(() => productRecords ?? [], [productRecords]);
+  const products = useMemo(() => canonicalProducts(productRecords ?? []), [productRecords]);
   const purchases = useMemo(() => purchaseRecords ?? [], [purchaseRecords]);
   const supermarkets = useMemo(() => supermarketRecords ?? [], [supermarketRecords]);
   const genericNames = useMemo(
@@ -3907,6 +4408,8 @@ function HistoryView() {
   );
   const [selected, setSelected] = useState<string[]>([]);
   const [selectionReady, setSelectionReady] = useState(false);
+  const [storeFilter, setStoreFilter] = useState("");
+  const [productFilter, setProductFilter] = useState("");
   useEffect(() => {
     if (!selectionReady && genericNames[0]) {
       setSelected([genericNames[0]]);
@@ -3916,7 +4419,22 @@ function HistoryView() {
 
   const relevant = enrichPurchases(purchases, products, supermarkets)
     .filter((p) => p.product?.genericName && selected.includes(p.product.genericName))
+    .filter(
+      (p) =>
+        (!storeFilter || String(p.supermarketId) === storeFilter) &&
+        (!productFilter || String(p.productId) === productFilter),
+    )
     .sort((a, b) => a.date.localeCompare(b.date));
+  const dailyLatest = Array.from(
+    [...relevant]
+      .sort(newestFirst)
+      .reduce((rows, purchase) => {
+        const key = `${purchase.date}|${purchase.productId}|${purchase.supermarketId}`;
+        if (!rows.has(key)) rows.set(key, purchase);
+        return rows;
+      }, new Map<string, EnrichedPurchase>())
+      .values(),
+  );
   const markets = Array.from(
     new Set(relevant.map((p) => p.supermarket?.name).filter(Boolean)),
   ) as string[];
@@ -3954,12 +4472,14 @@ function HistoryView() {
       }),
     };
     for (const genericName of selected) {
-      const rows = relevant.filter(
+      const rows = dailyLatest.filter(
         (purchase) => purchase.date === date && purchase.product?.genericName === genericName,
       );
       if (rows.length)
         point[genericName] = Number(
-          (rows.reduce((sum, purchase) => sum + purchase.normalizedUnitPrice, 0) / rows.length).toFixed(2),
+          (
+            rows.reduce((sum, purchase) => sum + purchase.normalizedUnitPrice, 0) / rows.length
+          ).toFixed(2),
         );
     }
     return point;
@@ -4023,9 +4543,47 @@ function HistoryView() {
         </div>
         <ProductMultiSelect options={genericNames} selected={selected} onChange={setSelected} />
       </div>
+      <div className="history-filters">
+        <label>
+          Producto y marca
+          <select value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
+            <option value="">Todas las marcas seleccionadas</option>
+            {products
+              .filter((product) => selected.includes(product.genericName))
+              .map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.name} · {product.brand || "Sin marca"}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label>
+          Supermercado
+          <select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}>
+            <option value="">Todos los supermercados</option>
+            {supermarkets.map((store) => (
+              <option key={store.id} value={store.id}>
+                {store.name}
+                {store.locality ? ` · ${store.locality}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {(storeFilter || productFilter) && (
+          <button
+            className="ghost"
+            onClick={() => {
+              setStoreFilter("");
+              setProductFilter("");
+            }}
+          >
+            Quitar filtros
+          </button>
+        )}
+      </div>
       {relevant.length === 0 ? (
         <div className="panel">
-          <Empty text="Necesitas varias compras para crear un histórico." />
+          <Empty text="No hay precios para esta selección. Añade un precio en Productos o cambia los filtros." />
         </div>
       ) : (
         <>
@@ -4039,7 +4597,10 @@ function HistoryView() {
             <div className="panel-title">
               <div>
                 <h3>Evolución por fecha</h3>
-                <p>Cada actualización de precio aparece en la fecha en que la registraste.</p>
+                <p>
+                  Último precio de cada día. Si seleccionas varias marcas o tiendas se muestra su
+                  media; filtra para ver una evolución concreta.
+                </p>
               </div>
               <BarChart3 size={20} />
             </div>
@@ -4258,7 +4819,7 @@ function MedinaView() {
       );
       const local = medinaPurchases
         .filter((purchase) => ids.has(purchase.productId))
-        .sort((a, b) => b.date.localeCompare(a.date))[0];
+        .sort(newestFirst)[0];
       const outside = purchases
         .filter(
           (purchase) =>
@@ -4266,7 +4827,7 @@ function MedinaView() {
             !medinaIds.has(purchase.supermarketId) &&
             purchase.normalizedUnit === local?.normalizedUnit,
         )
-        .sort((a, b) => b.date.localeCompare(a.date))[0];
+        .sort(newestFirst)[0];
       if (!local || !outside || outside.normalizedUnitPrice <= 0) continue;
       rows.push({
         genericName,
@@ -4315,7 +4876,11 @@ function MedinaView() {
           value={String(MEDINA_SUPERMARKETS.length)}
         />
         <Metric icon={ReceiptText} label="Compras en Medina" value={String(medinaTickets.length)} />
-        <Metric icon={ShoppingBasket} label="Precios registrados" value={String(medinaPurchases.length)} />
+        <Metric
+          icon={ShoppingBasket}
+          label="Precios registrados"
+          value={String(medinaPurchases.length)}
+        />
         <Metric
           icon={Scale}
           label="Diferencia media"
@@ -4344,7 +4909,7 @@ function MedinaView() {
           const storePriceCount = store?.id
             ? medinaPurchases.filter((purchase) => purchase.supermarketId === store.id).length
             : 0;
-          const latest = [...storeTickets].sort((a, b) => b.date.localeCompare(a.date))[0];
+          const latest = [...storeTickets].sort(newestFirst)[0];
           const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${directoryStore.name}, ${directoryStore.address}, Medina de Pomar`)}`;
           return (
             <article className="medina-store-card" key={directoryStore.name}>
@@ -4466,12 +5031,11 @@ async function exportSharedProducts() {
   ]);
   if (!allProducts.length) throw new Error("No hay productos guardados para compartir.");
   const productIds = new Set(allProducts.flatMap((product) => (product.id ? [product.id] : [])));
-  const products = allProducts
-    .map(({ photoBlob: _photoBlob, ...product }) => product);
+  const products = allProducts.map(({ photoBlob: _photoBlob, ...product }) => product);
   const latestByProductAndStore = new Map<string, Purchase>();
   allPurchases
     .filter((purchase) => productIds.has(purchase.productId))
-    .sort((a, b) => b.date.localeCompare(a.date) || (b.id ?? 0) - (a.id ?? 0))
+    .sort(newestFirst)
     .forEach((purchase) => {
       const key = `${purchase.productId}-${purchase.supermarketId}`;
       if (!latestByProductAndStore.has(key)) latestByProductAndStore.set(key, purchase);
@@ -4530,7 +5094,11 @@ function productsLookSimilar(existing: Product, incoming: ImportedProduct) {
   )
     return true;
   const words = (value: string) =>
-    new Set(comparableText(value).split(/[^a-z0-9]+/).filter((word) => word.length > 2));
+    new Set(
+      comparableText(value)
+        .split(/[^a-z0-9]+/)
+        .filter((word) => word.length > 2),
+    );
   const existingWords = words(existing.name);
   const incomingWords = words(incoming.name);
   if (!existingWords.size || !incomingWords.size) return false;
@@ -4621,10 +5189,26 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
         <h3>Cómo empezar</h3>
       </div>
       <div className="info-steps">
-        <div className="panel info-step"><em>01</em><strong>Añade tus tiendas</strong><span>Crea los supermercados que utilizas habitualmente.</span></div>
-        <div className="panel info-step"><em>02</em><strong>Guarda precios</strong><span>Registra productos o incorpóralos desde el catálogo público.</span></div>
-        <div className="panel info-step"><em>03</em><strong>Revisa los formatos</strong><span>Indica gramos, litros o unidades para comparar correctamente.</span></div>
-        <div className="panel info-step"><em>04</em><strong>Compara y compra</strong><span>Prepara la lista y consulta la tienda más conveniente.</span></div>
+        <div className="panel info-step">
+          <em>01</em>
+          <strong>Añade tus tiendas</strong>
+          <span>Crea los supermercados que utilizas habitualmente.</span>
+        </div>
+        <div className="panel info-step">
+          <em>02</em>
+          <strong>Guarda precios</strong>
+          <span>Registra productos o incorpóralos desde el catálogo público.</span>
+        </div>
+        <div className="panel info-step">
+          <em>03</em>
+          <strong>Revisa los formatos</strong>
+          <span>Indica gramos, litros o unidades para comparar correctamente.</span>
+        </div>
+        <div className="panel info-step">
+          <em>04</em>
+          <strong>Compara y compra</strong>
+          <span>Prepara la lista y consulta la tienda más conveniente.</span>
+        </div>
       </div>
 
       <div className="info-section-heading">
@@ -4633,7 +5217,12 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
       </div>
       <div className="info-module-grid">
         {modules.map(({ view, title, description, icon: Icon }) => (
-          <button className="panel info-module-card" type="button" key={view} onClick={() => onGo(view)}>
+          <button
+            className="panel info-module-card"
+            type="button"
+            key={view}
+            onClick={() => onGo(view)}
+          >
             <Icon size={22} />
             <span>
               <strong>{title}</strong>
@@ -4661,8 +5250,8 @@ function InfoView({ onGo }: { onGo: (view: View) => void }) {
           <div>
             <h3>Enlaces de compra</h3>
             <p>
-              Algunos productos recomendados contienen enlaces de afiliado. Las compras hechas
-              desde ellos ayudan a mantener SmartMarket y no aumentan el precio para ti.
+              Algunos productos recomendados contienen enlaces de afiliado. Las compras hechas desde
+              ellos ayudan a mantener SmartMarket y no aumentan el precio para ti.
             </p>
           </div>
         </div>
@@ -4783,10 +5372,7 @@ function SettingsView() {
   const locationSetting = useLiveQuery(() => db.appSettings.get(PRICE_LOCATION_SETTING), []);
   const [priceLocation, setPriceLocation] = useState("Medina de Pomar");
   const canChooseFolder = typeof window !== "undefined" && "showDirectoryPicker" in window;
-  const automaticBackup = useLiveQuery(
-    () => db.appSettings.get(INTERNAL_BACKUP_SETTING),
-    [],
-  );
+  const automaticBackup = useLiveQuery(() => db.appSettings.get(INTERNAL_BACKUP_SETTING), []);
   const automaticBackupStatus = useLiveQuery(
     () => db.appSettings.get(LAST_BACKUP_STATUS_SETTING),
     [],
@@ -4805,7 +5391,11 @@ function SettingsView() {
 
   async function savePriceLocation() {
     const value = priceLocation.trim() || "Medina de Pomar";
-    await db.appSettings.put({ key: PRICE_LOCATION_SETTING, value, updatedAt: new Date().toISOString() });
+    await db.appSettings.put({
+      key: PRICE_LOCATION_SETTING,
+      value,
+      updatedAt: new Date().toISOString(),
+    });
     setPriceLocation(value);
     setStatus("Ubicación de comparación guardada.");
   }
@@ -4876,95 +5466,87 @@ function SettingsView() {
     let reusedProducts = 0;
     let addedPrices = 0;
 
-    await db.transaction(
-      "rw",
-      db.supermarkets,
-      db.tickets,
-      db.products,
-      db.purchases,
-      async () => {
-        for (const incoming of chosenProducts) {
-          if (!incoming.id) continue;
-          const match = existingProducts.find((product) => productsMatchExactly(product, incoming));
-          if (match?.id) {
-            productIdMap.set(incoming.id, match.id);
-            reusedProducts += 1;
-            continue;
-          }
-          const { id: _id, photoBlob: _photoBlob, ...newProduct } = incoming;
-          const id = await db.products.add(newProduct);
-          productIdMap.set(incoming.id, id);
-          addedProducts += 1;
+    await db.transaction("rw", db.supermarkets, db.tickets, db.products, db.purchases, async () => {
+      for (const incoming of chosenProducts) {
+        if (!incoming.id) continue;
+        const match = existingProducts.find((product) => productsMatchExactly(product, incoming));
+        if (match?.id) {
+          productIdMap.set(incoming.id, match.id);
+          reusedProducts += 1;
+          continue;
         }
+        const { id: _id, photoBlob: _photoBlob, ...newProduct } = incoming;
+        const id = await db.products.add(newProduct);
+        productIdMap.set(incoming.id, id);
+        addedProducts += 1;
+      }
 
-        const relevantPurchases = data.purchases.filter((purchase) =>
-          chosenForeignIds.has(purchase.productId),
+      const relevantPurchases = data.purchases.filter((purchase) =>
+        chosenForeignIds.has(purchase.productId),
+      );
+      const relevantStoreIds = new Set(relevantPurchases.map((purchase) => purchase.supermarketId));
+      for (const incoming of data.supermarkets.filter(
+        (store) => store.id && relevantStoreIds.has(store.id),
+      )) {
+        if (!incoming.id) continue;
+        const match = existingStores.find(
+          (store) =>
+            comparableText(store.name) === comparableText(incoming.name) &&
+            comparableText(store.locality ?? "") === comparableText(incoming.locality ?? ""),
         );
-        const relevantStoreIds = new Set(relevantPurchases.map((purchase) => purchase.supermarketId));
-        for (const incoming of data.supermarkets.filter(
-          (store) => store.id && relevantStoreIds.has(store.id),
-        )) {
-          if (!incoming.id) continue;
-          const match = existingStores.find(
-            (store) =>
-              comparableText(store.name) === comparableText(incoming.name) &&
-              comparableText(store.locality ?? "") === comparableText(incoming.locality ?? ""),
-          );
-          if (match?.id) storeIdMap.set(incoming.id, match.id);
-          else {
-            const { id: _id, ...newStore } = incoming;
-            storeIdMap.set(incoming.id, await db.supermarkets.add(newStore));
-          }
+        if (match?.id) storeIdMap.set(incoming.id, match.id);
+        else {
+          const { id: _id, ...newStore } = incoming;
+          storeIdMap.set(incoming.id, await db.supermarkets.add(newStore));
         }
+      }
 
-        const importedPriceKeys = new Set<string>();
-        const grouped = new Map<string, Purchase[]>();
-        for (const purchase of relevantPurchases) {
-          const productId = productIdMap.get(purchase.productId);
-          const supermarketId = storeIdMap.get(purchase.supermarketId);
-          if (!productId || !supermarketId) continue;
-          const priceKey = [
-            productId,
-            supermarketId,
-            purchase.date,
-            purchase.normalizedUnit,
-            purchase.normalizedUnitPrice.toFixed(4),
-          ].join("|");
-          const alreadyExists = existingPurchases.some(
-            (existing) =>
-              existing.productId === productId &&
-              existing.supermarketId === supermarketId &&
-              existing.date === purchase.date &&
-              existing.normalizedUnit === purchase.normalizedUnit &&
-              Math.abs(existing.normalizedUnitPrice - purchase.normalizedUnitPrice) < 0.0001,
-          );
-          if (alreadyExists || importedPriceKeys.has(priceKey)) continue;
-          importedPriceKeys.add(priceKey);
-          const groupKey = `${supermarketId}|${purchase.date}`;
-          const rows = grouped.get(groupKey) ?? [];
-          rows.push({ ...purchase, productId, supermarketId });
-          grouped.set(groupKey, rows);
+      const importedPriceKeys = new Set<string>();
+      const grouped = new Map<string, Purchase[]>();
+      for (const purchase of relevantPurchases) {
+        const productId = productIdMap.get(purchase.productId);
+        const supermarketId = storeIdMap.get(purchase.supermarketId);
+        if (!productId || !supermarketId) continue;
+        const priceKey = [
+          productId,
+          supermarketId,
+          purchase.date,
+          purchase.normalizedUnit,
+          purchase.normalizedUnitPrice.toFixed(4),
+        ].join("|");
+        const alreadyExists = existingPurchases.some(
+          (existing) =>
+            existing.productId === productId &&
+            existing.supermarketId === supermarketId &&
+            existing.date === purchase.date &&
+            existing.normalizedUnit === purchase.normalizedUnit &&
+            Math.abs(existing.normalizedUnitPrice - purchase.normalizedUnitPrice) < 0.0001,
+        );
+        if (alreadyExists || importedPriceKeys.has(priceKey)) continue;
+        importedPriceKeys.add(priceKey);
+        const groupKey = `${supermarketId}|${purchase.date}`;
+        const rows = grouped.get(groupKey) ?? [];
+        rows.push({ ...purchase, productId, supermarketId });
+        grouped.set(groupKey, rows);
+      }
+
+      for (const rows of grouped.values()) {
+        const first = rows[0]!;
+        const ticketId = await db.tickets.add({
+          supermarketId: first.supermarketId,
+          date: first.date,
+          total: rows.reduce((sum, row) => sum + Math.max(0, row.price - row.discount), 0),
+          filename: "Lista compartida",
+          fileType: "application/json",
+          createdAt: new Date().toISOString(),
+        });
+        for (const row of rows) {
+          const { id: _id, ticketId: _ticketId, ...purchase } = row;
+          await db.purchases.add({ ...purchase, ticketId });
+          addedPrices += 1;
         }
-
-        for (const rows of grouped.values()) {
-          const first = rows[0]!;
-          const ticketId = await db.tickets.add({
-            supermarketId: first.supermarketId,
-            date: first.date,
-            total: rows.reduce((sum, row) => sum + Math.max(0, row.price - row.discount), 0),
-            filename: "Lista compartida",
-            fileType: "application/json",
-            createdAt: new Date().toISOString(),
-          });
-          for (const row of rows) {
-            const { id: _id, ticketId: _ticketId, ...purchase } = row;
-            await db.purchases.add({ ...purchase, ticketId });
-            addedPrices += 1;
-          }
-        }
-
-      },
-    );
+      }
+    });
     setSharedPreview(undefined);
     setStatus(
       `Importación fusionada: ${addedProducts} productos nuevos, ${reusedProducts} coincidentes y ${addedPrices} precios añadidos. Tus datos anteriores se han conservado.`,
@@ -5116,8 +5698,14 @@ function SettingsView() {
           <h3>Zona para comparar precios</h3>
           <p>Se utilizará como referencia en las consultas de precios públicos.</p>
         </div>
-        <input value={priceLocation} onChange={(event) => setPriceLocation(event.target.value)} placeholder="Municipio o código postal" />
-        <button className="primary" type="button" onClick={() => void savePriceLocation()}><Save size={16} /> Guardar</button>
+        <input
+          value={priceLocation}
+          onChange={(event) => setPriceLocation(event.target.value)}
+          placeholder="Municipio o código postal"
+        />
+        <button className="primary" type="button" onClick={() => void savePriceLocation()}>
+          <Save size={16} /> Guardar
+        </button>
       </div>
       <div className="settings-grid">
         <div className="panel setting-card">
@@ -5211,62 +5799,104 @@ function SettingsView() {
       {sharedPreview && (
         <ModalPortal>
           <div className="modal-backdrop">
-            <div className="modal shared-list-modal" role="dialog" aria-modal="true" aria-label="Revisar lista compartida">
-            <div className="modal-head">
-              <div>
-                <span className="eyebrow">IMPORTACIÓN SIN BORRADO</span>
-                <h2>Selecciona qué productos incorporar</h2>
-                <p>
-                  Los productos coincidentes usarán tu ficha actual. Solo se añadirán precios que no estén ya guardados.
-                </p>
+            <div
+              className="modal shared-list-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Revisar lista compartida"
+            >
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">IMPORTACIÓN SIN BORRADO</span>
+                  <h2>Selecciona qué productos incorporar</h2>
+                  <p>
+                    Los productos coincidentes usarán tu ficha actual. Solo se añadirán precios que
+                    no estén ya guardados.
+                  </p>
+                </div>
+                <button
+                  className="icon-btn"
+                  type="button"
+                  aria-label="Cerrar"
+                  onClick={() => setSharedPreview(undefined)}
+                >
+                  <X size={18} />
+                </button>
               </div>
-              <button className="icon-btn" type="button" aria-label="Cerrar" onClick={() => setSharedPreview(undefined)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="shared-list-tools">
-              <strong>{selectedSharedProducts.length} de {sharedPreview.data.products.length} seleccionados</strong>
-              <button className="ghost" type="button" onClick={() => setSelectedSharedProducts(sharedPreview.data.products.map((_, index) => index))}>
-                Seleccionar todos
-              </button>
-              <button className="ghost" type="button" onClick={() => setSelectedSharedProducts([])}>
-                Ninguno
-              </button>
-            </div>
-            <div className="shared-product-list">
-              {sharedPreview.data.products.map((product, index) => {
-                const prices = product.id
-                  ? sharedPreview.data.purchases.filter((purchase) => purchase.productId === product.id)
-                  : [];
-                const match = sharedPreview.matches[index];
-                return (
-                  <label className={selectedSharedProducts.includes(index) ? "shared-product selected" : "shared-product"} key={`${product.id ?? index}-${product.name}`}>
-                    <input
-                      type="checkbox"
-                      checked={selectedSharedProducts.includes(index)}
-                      onChange={() => toggleSharedProduct(index)}
-                    />
-                    <div>
-                      <strong>{product.genericName || product.name}</strong>
-                      <span>{product.brand || product.name} · {prices.length} precios compartidos</span>
-                    </div>
-                    {match === "exact" ? (
-                      <em>YA EXISTE</em>
-                    ) : match === "similar" ? (
-                      <em className="similar">PRODUCTO SIMILAR</em>
-                    ) : (
-                      <em className="new">NUEVO</em>
-                    )}
-                  </label>
-                );
-              })}
-            </div>
-            <div className="modal-footer shared-list-footer">
-              <button className="ghost" type="button" onClick={() => setSharedPreview(undefined)}>Cancelar</button>
-              <button className="primary" type="button" disabled={!selectedSharedProducts.length} onClick={() => void mergeSharedList()}>
-                <Plus size={17} /> Incorporar seleccionados
-              </button>
-            </div>
+              <div className="shared-list-tools">
+                <strong>
+                  {selectedSharedProducts.length} de {sharedPreview.data.products.length}{" "}
+                  seleccionados
+                </strong>
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() =>
+                    setSelectedSharedProducts(sharedPreview.data.products.map((_, index) => index))
+                  }
+                >
+                  Seleccionar todos
+                </button>
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() => setSelectedSharedProducts([])}
+                >
+                  Ninguno
+                </button>
+              </div>
+              <div className="shared-product-list">
+                {sharedPreview.data.products.map((product, index) => {
+                  const prices = product.id
+                    ? sharedPreview.data.purchases.filter(
+                        (purchase) => purchase.productId === product.id,
+                      )
+                    : [];
+                  const match = sharedPreview.matches[index];
+                  return (
+                    <label
+                      className={
+                        selectedSharedProducts.includes(index)
+                          ? "shared-product selected"
+                          : "shared-product"
+                      }
+                      key={`${product.id ?? index}-${product.name}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSharedProducts.includes(index)}
+                        onChange={() => toggleSharedProduct(index)}
+                      />
+                      <div>
+                        <strong>{product.genericName || product.name}</strong>
+                        <span>
+                          {product.brand || product.name} · {prices.length} precios compartidos
+                        </span>
+                      </div>
+                      {match === "exact" ? (
+                        <em>YA EXISTE</em>
+                      ) : match === "similar" ? (
+                        <em className="similar">PRODUCTO SIMILAR</em>
+                      ) : (
+                        <em className="new">NUEVO</em>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="modal-footer shared-list-footer">
+                <button className="ghost" type="button" onClick={() => setSharedPreview(undefined)}>
+                  Cancelar
+                </button>
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={!selectedSharedProducts.length}
+                  onClick={() => void mergeSharedList()}
+                >
+                  <Plus size={17} /> Incorporar seleccionados
+                </button>
+              </div>
             </div>
           </div>
         </ModalPortal>
@@ -5361,7 +5991,7 @@ function detectAlerts(purchases: EnrichedPurchase[]) {
   }
   const alerts: Array<{ key: string; kind: "up" | "down"; title: string; detail: string }> = [];
   for (const [productId, list] of map) {
-    const sorted = list.sort((a, b) => b.date.localeCompare(a.date));
+    const sorted = list.sort(newestFirst);
     if (sorted.length < 2) continue;
     const latest = sorted[0]!;
     const prev = sorted[1]!;
